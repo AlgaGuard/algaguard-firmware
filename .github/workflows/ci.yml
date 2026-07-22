@@ -25,7 +25,16 @@ jobs:
           python-version: "3.12"
       - run: pip install platformio
       - run: pio test -e native
-      - run: pio check -e esp32-s3-devkitc-1
+      - name: Static analysis
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cppcheck
+          cppcheck \
+            --enable=warning,style,performance \
+            --error-exitcode=1 \
+            --suppress=missingIncludeSystem \
+            --std=c++17 \
+            include src
       - run: pio run -e esp32-s3-devkitc-1
       - name: Size report
         run: pio run -e esp32-s3-devkitc-1 -t size
