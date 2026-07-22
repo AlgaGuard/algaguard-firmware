@@ -1,0 +1,151 @@
+name: Firmware CI
+on:
+  pull_request:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+    inputs:
+      rollout_ring:
+        type: choice
+        options: [DEVELOPMENT, INTERNAL, BETA, PRODUCTION]
+        required: true
+      version:
+        description: Semantic firmware version
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install platformio
+      - run: pio test -e native
+      - name: Static analysis
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cppcheck
+          cppcheck \
+            --enable=warning,style,performance \
+            --error-exitcode=1 \
+            --suppress=missingIncludeSystem \
+            --std=c++17 \
+            include src
+      - run: pio run -e esp32-s3-devkitc-1
+      - name: Size report
+        run: pio run -e esp32-s3-devkitc-1 -t size
+      - name: Contract fixture guard
+        run: grep -R 'SIMULATED\|NTP_SYNCED\|application' include test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-development-unsigned
+          path: .pio/build/esp32-s3-devkitc-1/firmware.bin
+  sign-development:
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/develop' &&
+      vars.ENABLE_DEVELOPMENT_SIGNING == 'true'
+    needs: validate
+    environment: firmware-development
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware-development-unsigned
+      - name: Sign manifest without exposing key
+        env:
+          OTA_SIGNING_PRIVATE_KEY_B64: ${{ secrets.OTA_SIGNING_PRIVATE_KEY_B64 }}
+        run: |
+          test -n "$OTA_SIGNING_PRIVATE_KEY_B64"
+          umask 077
+          printf '%s' "$OTA_SIGNING_PRIVATE_KEY_B64" | base64 --decode > "$RUNNER_TEMP/ota-signing-key.pem"
+          sha256sum firmware.bin | cut -d' ' -f1 > firmware.sha256
+          openssl dgst -sha256 -sign "$RUNNER_TEMP/ota-signing-key.pem" -out firmware.sig firmware.bin
+          rm -f "$RUNNER_TEMP/ota-signing-key.pem"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-development-signed
+          path: |
+            firmware.bin
+            firmware.sha256
+            firmware.sig
+  publish-release:
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    environment:
+      name: ${{ inputs.rollout_ring == 'PRODUCTION' && 'firmware-production' || 'firmware-development' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware-development-unsigned
+      - name: Build signed manifest
+        id: manifest
+        env:
+          OTA_SIGNING_PRIVATE_KEY_B64: ${{ secrets.OTA_SIGNING_PRIVATE_KEY_B64 }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_RING: ${{ inputs.rollout_ring }}
+        run: |
+          set -eu
+          test -n "$OTA_SIGNING_PRIVATE_KEY_B64"
+          umask 077
+          key="$RUNNER_TEMP/ota-signing-key.pem"
+          trap 'rm -f "$key"' EXIT
+          printf '%s' "$OTA_SIGNING_PRIVATE_KEY_B64" | base64 --decode > "$key"
+          digest="$(sha256sum firmware.bin | cut -d' ' -f1)"
+          size="$(stat -c '%s' firmware.bin)"
+          openssl dgst -sha256 -sign "$key" -out firmware.sig firmware.bin
+          signature="$(base64 -w0 firmware.sig)"
+          expires_at="$(date -u -d '+7 days' '+%Y-%m-%dT%H:%M:%SZ')"
+          jq -n \
+            --arg hardwareModel ESP32-S3-DevKitC-1-N16R8 \
+            --arg version "$RELEASE_VERSION" \
+            --arg sha256 "$digest" \
+            --arg signature "$signature" \
+            --arg ring "$RELEASE_RING" \
+            --arg expiresAt "$expires_at" \
+            --argjson sizeBytes "$size" \
+            '{hardwareModel:$hardwareModel,version:$version,sizeBytes:$sizeBytes,sha256:$sha256,signature:{algorithm:"ECDSA_P256_SHA256",keyId:"ota-release",value:$signature},ring:$ring,expiresAt:$expiresAt}' \
+            > firmware-manifest.json
+          echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+      - name: Upload to S3-compatible storage
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.OTA_STORAGE_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.OTA_STORAGE_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.OTA_STORAGE_REGION || 'us-east-1' }}
+          OTA_STORAGE_ENDPOINT: ${{ vars.OTA_STORAGE_ENDPOINT }}
+          OTA_STORAGE_BUCKET: ${{ vars.OTA_STORAGE_BUCKET }}
+          RELEASE_VERSION: ${{ steps.manifest.outputs.version }}
+        run: |
+          set -eu
+          test -n "$OTA_STORAGE_ENDPOINT"
+          test -n "$OTA_STORAGE_BUCKET"
+          prefix="firmware/$RELEASE_VERSION"
+          aws --endpoint-url "$OTA_STORAGE_ENDPOINT" s3 cp firmware.bin "s3://$OTA_STORAGE_BUCKET/$prefix/firmware.bin"
+          aws --endpoint-url "$OTA_STORAGE_ENDPOINT" s3 cp firmware.sig "s3://$OTA_STORAGE_BUCKET/$prefix/firmware.sig"
+          aws --endpoint-url "$OTA_STORAGE_ENDPOINT" s3 cp firmware-manifest.json "s3://$OTA_STORAGE_BUCKET/$prefix/firmware-manifest.json"
+          jq --arg objectKey "$prefix/firmware.bin" '. + {objectKey:$objectKey}' firmware-manifest.json > release.json
+      - name: Create OTA release metadata
+        env:
+          OTA_SERVICE_RELEASE_URL: ${{ vars.OTA_SERVICE_RELEASE_URL }}
+          OTA_SERVICE_TOKEN: ${{ secrets.OTA_SERVICE_TOKEN }}
+        run: |
+          set -eu
+          case "$OTA_SERVICE_RELEASE_URL" in https://*) ;; *) echo "OTA service URL must use HTTPS" >&2; exit 1;; esac
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "authorization: Bearer $OTA_SERVICE_TOKEN" \
+            --header 'content-type: application/json' \
+            --data @release.json \
+            "$OTA_SERVICE_RELEASE_URL"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ inputs.version }}-${{ inputs.rollout_ring }}-signed-manifest
+          path: |
+            firmware-manifest.json
+            firmware.sig

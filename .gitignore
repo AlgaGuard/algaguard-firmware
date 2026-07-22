@@ -1,0 +1,6 @@
+.pio/
+.vscode/
+compile_commands.json
+firmware-manifest.json
+*.pem
+*.key
