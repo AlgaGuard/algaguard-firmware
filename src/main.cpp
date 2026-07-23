@@ -1,4 +1,5 @@
 #include "algaguard/hardware.hpp"
+#include "algaguard/credentials.hpp"
 #include "algaguard/modules.hpp"
 
 #include "driver/gpio.h"
@@ -14,6 +15,8 @@ namespace {
 constexpr char kTag[] = "algaguard";
 algaguard::DeterministicSimulator simulator{0xA16A6A4DU};
 algaguard::LocalQueue<algaguard::SimulatedSample> queue{120};
+constexpr algaguard::CredentialLimits credential_limits{};
+static_assert(ALGAGUARD_MQTT_MAX_BATCH_SAMPLES <= 120, "MQTT batch exceeds released contract");
 
 void configure_gpio() {
   const std::uint64_t output_mask = (1ULL << algaguard::hardware::kLedRed) | (1ULL << algaguard::hardware::kLedGreen) |
@@ -49,6 +52,10 @@ extern "C" void app_main() {
   const bool expected_n16r8 = flash_bytes >= 16U * 1024U * 1024U && psram_bytes >= 8U * 1024U * 1024U;
   ESP_LOGI(kTag, "AlgaGuard USB-only boot cores=%d flash=%u psram=%u expected_n16r8=%s oled=0x%02X", chip.cores,
            flash_bytes, psram_bytes, expected_n16r8 ? "true" : "false", algaguard::hardware::kOledAddress);
+  if (!credential_limits.bounded()) {
+    ESP_LOGE(kTag, "credential_transport_limits_invalid");
+    return;
+  }
   gpio_set_level(static_cast<gpio_num_t>(algaguard::hardware::kLedBlue), 1);
   xTaskCreate(sampling_task, "simulated_sampling", 4096, nullptr, 5, nullptr);
 }
