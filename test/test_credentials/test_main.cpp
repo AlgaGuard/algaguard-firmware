@@ -55,6 +55,10 @@ class FakeTlsLoader final : public algaguard::MqttTlsCredentialLoader {
 void test_limits_and_public_chain_are_bounded() {
   const algaguard::CredentialLimits limits;
   TEST_ASSERT_TRUE(limits.bounded());
+  TEST_ASSERT_EQUAL_UINT32(3, limits.mqtt_duplicate_max_retries);
+  auto unsafe_limits = limits;
+  unsafe_limits.mqtt_duplicate_max_retries = 0;
+  TEST_ASSERT_FALSE(unsafe_limits.bounded());
   const auto parsed = algaguard::parse_public_certificate_chain(kCertificate, limits);
   TEST_ASSERT_TRUE(parsed.has_value());
   TEST_ASSERT_EQUAL_UINT32(1, parsed->size());

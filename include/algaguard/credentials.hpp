@@ -20,6 +20,9 @@
 #ifndef ALGAGUARD_REPLAY_MAX_SAMPLES
 #define ALGAGUARD_REPLAY_MAX_SAMPLES 480
 #endif
+#ifndef ALGAGUARD_MQTT_DUPLICATE_MAX_RETRIES
+#define ALGAGUARD_MQTT_DUPLICATE_MAX_RETRIES 3
+#endif
 #ifndef ALGAGUARD_OTA_MAX_ARTIFACT_BYTES
 #define ALGAGUARD_OTA_MAX_ARTIFACT_BYTES 4194304
 #endif
@@ -46,6 +49,7 @@ struct CredentialLimits {
   std::size_t queue_max_samples{ALGAGUARD_QUEUE_MAX_SAMPLES};
   std::size_t replay_max_batches{ALGAGUARD_REPLAY_MAX_BATCHES};
   std::size_t replay_max_samples{ALGAGUARD_REPLAY_MAX_SAMPLES};
+  std::size_t mqtt_duplicate_max_retries{ALGAGUARD_MQTT_DUPLICATE_MAX_RETRIES};
   std::size_t ota_max_artifact_bytes{ALGAGUARD_OTA_MAX_ARTIFACT_BYTES};
   std::size_t ota_max_manifest_bytes{ALGAGUARD_OTA_MAX_MANIFEST_BYTES};
   std::size_t certificate_max_bytes{ALGAGUARD_CREDENTIAL_MAX_CERT_BYTES};
@@ -56,7 +60,8 @@ struct CredentialLimits {
 
   bool bounded() const {
     return mqtt_max_batch_samples > 0 && mqtt_max_batch_samples <= 120 && queue_max_samples > 0 &&
-           replay_max_batches > 0 && replay_max_samples >= mqtt_max_batch_samples && ota_max_artifact_bytes > 0 &&
+           replay_max_batches > 0 && replay_max_samples >= mqtt_max_batch_samples &&
+           mqtt_duplicate_max_retries > 0 && mqtt_duplicate_max_retries <= 10 && ota_max_artifact_bytes > 0 &&
            ota_max_artifact_bytes <= 16U * 1024U * 1024U && ota_max_manifest_bytes > 0 &&
            certificate_max_bytes >= 1024 && certificate_chain_max_bytes >= certificate_max_bytes &&
            csr_max_bytes >= 1024 && unsynchronized_holdover_seconds > 0;
