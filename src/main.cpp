@@ -1,4 +1,5 @@
 #include "algaguard/hardware.hpp"
+#include "algaguard/brand_splash.hpp"
 #include "algaguard/credentials.hpp"
 #include "algaguard/modules.hpp"
 
@@ -61,6 +62,27 @@ esp_err_t clear_oled() {
   return ESP_OK;
 }
 
+esp_err_t draw_oled_bitmap(const std::array<std::uint8_t, 1024>& bitmap) {
+  for (std::uint8_t page = 0; page < 8; ++page) {
+    esp_err_t result = oled_command(0xB0U | page);
+    if (result != ESP_OK) return result;
+    result = oled_command(0x00);
+    if (result != ESP_OK) return result;
+    result = oled_command(0x10);
+    if (result != ESP_OK) return result;
+    i2c_cmd_handle_t transaction = i2c_cmd_link_create();
+    i2c_master_start(transaction);
+    i2c_master_write_byte(transaction, (algaguard::hardware::kOledAddress << 1U) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(transaction, 0x40, true);
+    i2c_master_write(transaction, bitmap.data() + page * 128, 128, true);
+    i2c_master_stop(transaction);
+    result = i2c_master_cmd_begin(I2C_NUM_0, transaction, pdMS_TO_TICKS(100));
+    i2c_cmd_link_delete(transaction);
+    if (result != ESP_OK) return result;
+  }
+  return ESP_OK;
+}
+
 void configure_gpio() {
   const std::uint64_t output_mask = (1ULL << algaguard::hardware::kLedRed) | (1ULL << algaguard::hardware::kLedGreen) |
                                     (1ULL << algaguard::hardware::kLedBlue);
@@ -90,6 +112,7 @@ void configure_oled_i2c() {
     ESP_ERROR_CHECK(oled_command(command));
   }
   ESP_ERROR_CHECK(clear_oled());
+  ESP_ERROR_CHECK(draw_oled_bitmap(algaguard::brand::kOledBootSplash));
 }
 
 void apply_leds(algaguard::LedPriority priority, bool remote_indicator = false) {
