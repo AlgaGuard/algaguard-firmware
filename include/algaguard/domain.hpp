@@ -1,14 +1,16 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <deque>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
 namespace algaguard {
 enum class ProvisioningState { kUnprovisioned, kBleAdvertising, kWifiConnecting, kBootstrap, kProvisioned, kFault };
-enum class MenuPage { kSetupQr, kHome, kTelemetry, kNetwork, kDeviceInformation, kOta, kResetConfirmation };
+enum class MenuPage { kBoot, kSetupQr, kFallbackCode, kHome, kTelemetry, kNetwork, kDeviceInformation, kCertificateCloud, kLeds, kOta, kError, kResetConfirmation };
 enum class OtaState { kIdle, kEligible, kDownloading, kVerified, kPendingBootValidation, kValid, kRollback };
 enum class ButtonEvent { kNone, kShortPress };
 
@@ -63,11 +65,83 @@ class MenuController {
   MenuPage page() const { return pages_[index_]; }
   void down() { index_ = (index_ + 1) % pages_.size(); }
   void up() { index_ = (index_ + pages_.size() - 1) % pages_.size(); }
-  void back() { index_ = 1; }
+  void select() { if (page() == MenuPage::kResetConfirmation) reset_confirmed_ = true; }
+  void back() { index_ = 3; reset_confirmed_ = false; }
+  bool reset_confirmed() const { return reset_confirmed_; }
  private:
-  std::array<MenuPage, 7> pages_{MenuPage::kSetupQr, MenuPage::kHome, MenuPage::kTelemetry, MenuPage::kNetwork,
-                                MenuPage::kDeviceInformation, MenuPage::kOta, MenuPage::kResetConfirmation};
-  std::size_t index_{1};
+  std::array<MenuPage, 12> pages_{MenuPage::kBoot, MenuPage::kSetupQr, MenuPage::kFallbackCode, MenuPage::kHome,
+                                  MenuPage::kTelemetry, MenuPage::kNetwork, MenuPage::kDeviceInformation,
+                                  MenuPage::kCertificateCloud, MenuPage::kLeds, MenuPage::kOta, MenuPage::kError,
+                                  MenuPage::kResetConfirmation};
+  std::size_t index_{3};
+  bool reset_confirmed_{false};
+};
+
+enum class LedPriority { kDisconnected, kSetupOrOta, kConnected, kFault };
+struct LedState { bool red{}; bool green{}; bool blue{}; };
+inline LedState led_state(LedPriority priority, bool remote_indicator) {
+  if (priority == LedPriority::kFault) return {true, false, false};
+  if (priority == LedPriority::kConnected) return {false, true, false};
+  if (priority == LedPriority::kSetupOrOta) return {false, false, true};
+  return {false, false, remote_indicator};
+}
+
+struct SetupQrPayload {
+  std::string device_id;
+  std::string ble_service_uuid;
+  std::string fallback_code;
+  bool safe_for_display() const { return !device_id.empty() && !ble_service_uuid.empty() && !fallback_code.empty(); }
+};
+
+enum class BleMessageType { kHello, kDeviceInfo, kProvisionBegin, kWifiCredentials, kProvisionStatus, kProvisionComplete, kProvisionError };
+class BleProvisioningStateMachine {
+ public:
+  bool accept(BleMessageType type, std::size_t bytes) {
+    if (bytes == 0 || bytes > 1024) return false;
+    if (type == BleMessageType::kHello && state_ == 0) { state_ = 1; return true; }
+    if (type == BleMessageType::kDeviceInfo && state_ == 1) { state_ = 2; return true; }
+    if (type == BleMessageType::kProvisionBegin && state_ == 2) { state_ = 3; return true; }
+    if (type == BleMessageType::kWifiCredentials && state_ == 3) { state_ = 4; return true; }
+    if (type == BleMessageType::kProvisionComplete && state_ == 4) { state_ = 5; return true; }
+    if (type == BleMessageType::kProvisionError && state_ >= 3) { state_ = 6; return true; }
+    return false;
+  }
+  bool complete() const { return state_ == 5; }
+ private:
+  int state_{0};
+};
+
+class SecretBuffer {
+ public:
+  void assign(std::string value) { value_ = std::move(value); }
+  void clear() { std::fill(value_.begin(), value_.end(), '\0'); value_.clear(); }
+  bool empty() const { return value_.empty(); }
+ private:
+  std::string value_;
+};
+
+enum class CommandStatus { kReceived, kInProgress, kCompleted, kRejectedExpired, kRejectedDuplicate };
+class CommandProcessor {
+ public:
+  CommandStatus accept(std::string command_id, std::string type, std::uint64_t now_epoch, std::uint64_t expires_epoch) {
+    if (command_id.empty() || (type != "REQUEST_STATUS" && type != "SET_INDICATOR_STATE")) return CommandStatus::kRejectedExpired;
+    if (expires_epoch <= now_epoch) return CommandStatus::kRejectedExpired;
+    if (!processed_.insert(std::move(command_id)).second) return CommandStatus::kRejectedDuplicate;
+    return CommandStatus::kReceived;
+  }
+ private:
+  std::set<std::string> processed_;
+};
+
+class TelemetryBatcher {
+ public:
+  explicit TelemetryBatcher(std::size_t target = 10) : target_(target) {}
+  bool add(SimulatedSample sample) { if (samples_.size() >= target_) return false; samples_.push_back(std::move(sample)); return true; }
+  bool ready() const { return samples_.size() == target_; }
+  std::vector<SimulatedSample> take_for_qos1() { auto result = samples_; samples_.clear(); return result; }
+ private:
+  std::size_t target_;
+  std::vector<SimulatedSample> samples_;
 };
 
 template <typename T>

@@ -11,7 +11,6 @@ struct BleProvisioning { ProvisioningState state{ProvisioningState::kUnprovision
 struct WifiManager { bool connected{}; };
 struct TimeManager { std::string quality{"UNSYNCED"}; };
 struct MqttClient { bool tls_required{true}; int qos{1}; };
-struct TelemetryBatcher { std::vector<SimulatedSample> pending; std::size_t target_samples{10}; };
 struct ProfileCache { std::string profile_id; std::string profile_version; };
 struct StatusHealthPublisher { bool retained_online{}; };
 struct SecureNvs { bool encrypted_credentials_only{true}; };

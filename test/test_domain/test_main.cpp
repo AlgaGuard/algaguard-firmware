@@ -46,11 +46,63 @@ void test_ota_requires_verified_manifest_and_rolls_back() {
   TEST_ASSERT_EQUAL(static_cast<int>(algaguard::OtaState::kRollback), static_cast<int>(ota.state()));
 }
 
+void test_led_priority_and_explicit_reset_confirmation() {
+  const auto fault = algaguard::led_state(algaguard::LedPriority::kFault, true);
+  TEST_ASSERT_TRUE(fault.red);
+  TEST_ASSERT_FALSE(fault.green);
+  const auto connected = algaguard::led_state(algaguard::LedPriority::kConnected, true);
+  TEST_ASSERT_FALSE(connected.red);
+  TEST_ASSERT_TRUE(connected.green);
+  algaguard::MenuController menu;
+  menu.down();
+  menu.back();
+  TEST_ASSERT_FALSE(menu.reset_confirmed());
+}
+
+void test_ble_protocol_order_password_clear_and_command_safety() {
+  algaguard::BleProvisioningStateMachine ble;
+  TEST_ASSERT_FALSE(ble.accept(algaguard::BleMessageType::kWifiCredentials, 20));
+  TEST_ASSERT_TRUE(ble.accept(algaguard::BleMessageType::kHello, 20));
+  TEST_ASSERT_TRUE(ble.accept(algaguard::BleMessageType::kDeviceInfo, 20));
+  TEST_ASSERT_TRUE(ble.accept(algaguard::BleMessageType::kProvisionBegin, 20));
+  TEST_ASSERT_TRUE(ble.accept(algaguard::BleMessageType::kWifiCredentials, 20));
+  TEST_ASSERT_TRUE(ble.accept(algaguard::BleMessageType::kProvisionComplete, 20));
+  TEST_ASSERT_TRUE(ble.complete());
+  algaguard::SecretBuffer password;
+  password.assign("never-log-me");
+  password.clear();
+  TEST_ASSERT_TRUE(password.empty());
+  algaguard::CommandProcessor commands;
+  TEST_ASSERT_EQUAL(static_cast<int>(algaguard::CommandStatus::kReceived),
+                    static_cast<int>(commands.accept("command-1", "REQUEST_STATUS", 10, 20)));
+  TEST_ASSERT_EQUAL(static_cast<int>(algaguard::CommandStatus::kRejectedDuplicate),
+                    static_cast<int>(commands.accept("command-1", "REQUEST_STATUS", 10, 20)));
+  TEST_ASSERT_EQUAL(static_cast<int>(algaguard::CommandStatus::kRejectedExpired),
+                    static_cast<int>(commands.accept("command-2", "REBOOT", 10, 20)));
+}
+
+void test_qr_payload_and_qos1_batching_are_bounded() {
+  const algaguard::SetupQrPayload qr{"AG-000001", "0000a1a0-0000-1000-8000-00805f9b34fb", "K7M2"};
+  TEST_ASSERT_TRUE(qr.safe_for_display());
+  algaguard::TelemetryBatcher batcher{2};
+  algaguard::DeterministicSimulator simulator{9};
+  TEST_ASSERT_TRUE(batcher.add(simulator.next(1, 1000)));
+  TEST_ASSERT_FALSE(batcher.ready());
+  TEST_ASSERT_TRUE(batcher.add(simulator.next(2, 2000)));
+  TEST_ASSERT_TRUE(batcher.ready());
+  const auto batch = batcher.take_for_qos1();
+  TEST_ASSERT_EQUAL_UINT32(2, batch.size());
+  TEST_ASSERT_FALSE(batcher.ready());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_deterministic_simulated_data);
   RUN_TEST(test_queue_retains_until_application_ack);
   RUN_TEST(test_button_debounce_and_menu);
   RUN_TEST(test_ota_requires_verified_manifest_and_rolls_back);
+  RUN_TEST(test_led_priority_and_explicit_reset_confirmation);
+  RUN_TEST(test_ble_protocol_order_password_clear_and_command_safety);
+  RUN_TEST(test_qr_payload_and_qos1_batching_are_bounded);
   return UNITY_END();
 }
