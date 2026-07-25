@@ -2,7 +2,11 @@
 #include <cstdint>
 
 namespace algaguard::hardware {
-constexpr std::uint8_t kOledAddress = 0x3C;
+// The replacement OLED is labelled with its 8-bit I2C write address (0x78).
+// ESP-IDF code uses the corresponding 7-bit address and adds the R/W bit.
+constexpr std::uint8_t kOledWriteAddress = 0x78;
+constexpr std::uint8_t kOledAddress = kOledWriteAddress >> 1U;
+static_assert((kOledAddress << 1U) == kOledWriteAddress, "OLED address conversion must preserve the write address");
 constexpr int kSda = 8;
 constexpr int kScl = 9;
 constexpr int kButtonUp = 4;
