@@ -122,6 +122,23 @@ void apply_leds(algaguard::LedPriority priority, bool remote_indicator = false) 
   gpio_set_level(static_cast<gpio_num_t>(algaguard::hardware::kLedBlue), state.blue);
 }
 
+void run_led_self_test() {
+  constexpr std::array<int, 3> kLedPins = {algaguard::hardware::kLedRed, algaguard::hardware::kLedGreen,
+                                            algaguard::hardware::kLedBlue};
+  ESP_LOGI(kTag, "led_self_test=red_green_blue");
+  for (const int pin : kLedPins) {
+    gpio_set_level(static_cast<gpio_num_t>(pin), 1);
+    vTaskDelay(pdMS_TO_TICKS(250));
+    gpio_set_level(static_cast<gpio_num_t>(pin), 0);
+  }
+}
+
+void report_button_event(const char* name, algaguard::ButtonEvent event) {
+  if (event == algaguard::ButtonEvent::kShortPress) {
+    ESP_LOGI(kTag, "button=%s event=short_press", name);
+  }
+}
+
 void render_oled_state() {
   // The SSD1306 remains on the approved 0x3C I2C bus. Rendering is deliberately
   // non-secret: setup shows device ID/QR/fallback code; cloud/OTA screens show status only.
@@ -150,14 +167,18 @@ void sampling_task(void*) {
 void input_task(void*) {
   while (true) {
     const auto now = static_cast<std::uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    if (up_button.update(gpio_get_level(static_cast<gpio_num_t>(algaguard::hardware::kButtonUp)) == 0, now) ==
-        algaguard::ButtonEvent::kShortPress) menu.up();
-    if (down_button.update(gpio_get_level(static_cast<gpio_num_t>(algaguard::hardware::kButtonDown)) == 0, now) ==
-        algaguard::ButtonEvent::kShortPress) menu.down();
-    if (select_button.update(gpio_get_level(static_cast<gpio_num_t>(algaguard::hardware::kButtonSelect)) == 0, now) ==
-        algaguard::ButtonEvent::kShortPress) menu.select();
-    if (back_button.update(gpio_get_level(static_cast<gpio_num_t>(algaguard::hardware::kButtonBack)) == 0, now) ==
-        algaguard::ButtonEvent::kShortPress) menu.back();
+    const auto up = up_button.update(gpio_get_level(static_cast<gpio_num_t>(algaguard::hardware::kButtonUp)) == 0, now);
+    const auto down = down_button.update(gpio_get_level(static_cast<gpio_num_t>(algaguard::hardware::kButtonDown)) == 0, now);
+    const auto select = select_button.update(gpio_get_level(static_cast<gpio_num_t>(algaguard::hardware::kButtonSelect)) == 0, now);
+    const auto back = back_button.update(gpio_get_level(static_cast<gpio_num_t>(algaguard::hardware::kButtonBack)) == 0, now);
+    if (up == algaguard::ButtonEvent::kShortPress) menu.up();
+    if (down == algaguard::ButtonEvent::kShortPress) menu.down();
+    if (select == algaguard::ButtonEvent::kShortPress) menu.select();
+    if (back == algaguard::ButtonEvent::kShortPress) menu.back();
+    report_button_event("up", up);
+    report_button_event("down", down);
+    report_button_event("select", select);
+    report_button_event("back", back);
     render_oled_state();
     vTaskDelay(pdMS_TO_TICKS(20));
   }
@@ -180,6 +201,7 @@ extern "C" void app_main() {
     ESP_LOGE(kTag, "credential_transport_limits_invalid");
     return;
   }
+  run_led_self_test();
   apply_leds(algaguard::LedPriority::kSetupOrOta);
   xTaskCreate(sampling_task, "simulated_sampling", 4096, nullptr, 5, nullptr);
   xTaskCreate(input_task, "buttons_oled", 4096, nullptr, 5, nullptr);
