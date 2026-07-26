@@ -36,14 +36,38 @@ jobs:
             --std=c++17 \
             include src
       - run: pio run -e esp32-s3-devkitc-1
+      - name: Validate OTA partition layout and firmware headroom
+        run: >-
+          python tools/validate_partitions.py partitions.csv
+          --flash-size 0x1000000
+          --firmware .pio/build/esp32-s3-devkitc-1/firmware.bin
+          --safety-margin 0x100000
+      - name: Partition validator regression tests
+        run: python test/test_partition_validation.py
       - name: Size report
         run: pio run -e esp32-s3-devkitc-1 -t size
+      - name: Reject private material in target artifacts
+        run: |
+          if grep --binary-files=text --extended-regexp \
+            --line-number \
+            --regexp='-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}' \
+            .pio/build/esp32-s3-devkitc-1/firmware.bin \
+            .pio/build/esp32-s3-devkitc-1/algaguard_firmware.map; then
+            echo "Private credential material found in target artifacts" >&2
+            exit 1
+          fi
       - name: Contract fixture guard
         run: grep -R 'SIMULATED\|NTP_SYNCED\|application' include test
       - uses: actions/upload-artifact@v4
         with:
           name: firmware-development-unsigned
-          path: .pio/build/esp32-s3-devkitc-1/firmware.bin
+          path: |
+            .pio/build/esp32-s3-devkitc-1/firmware.elf
+            .pio/build/esp32-s3-devkitc-1/firmware.bin
+            .pio/build/esp32-s3-devkitc-1/bootloader.bin
+            .pio/build/esp32-s3-devkitc-1/partitions.bin
+            .pio/build/esp32-s3-devkitc-1/ota_data_initial.bin
+            .pio/build/esp32-s3-devkitc-1/algaguard_firmware.map
   sign-development:
     if: >-
       github.event_name == 'push' &&
