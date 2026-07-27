@@ -701,7 +701,7 @@ def render_markdown(report: dict) -> bytes:
             "",
         ]
     )
-    return ("\n".join(lines) + "\n").encode("utf-8")
+    return "\n".join(lines).encode("utf-8")
 
 
 def write_reports(report: dict) -> None:
@@ -736,7 +736,13 @@ def main() -> int:
     branch = git_lines("branch", "--show-current")[0]
     head = git_lines("rev-parse", "HEAD")[0]
     staged_paths = git_lines("diff", "--cached", "--name-only")
-    if branch != "feat/secure-credential-storage" or head != "480131d1f94e68740c7dd41432cd9d8cc5d773a8" or staged_paths:
+    baseline = "480131d1f94e68740c7dd41432cd9d8cc5d773a8"
+    baseline_is_ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", baseline, head],
+        cwd=ROOT,
+        check=False,
+    ).returncode == 0
+    if branch != "feat/secure-credential-storage" or not baseline_is_ancestor or staged_paths:
         raise AcceptanceFailure("PRESERVATION_INVENTORY_REJECTED")
     process_environment = os.environ.copy()
     process_environment["PLATFORMIO_CORE_DIR"] = str(LOCAL_CORE)

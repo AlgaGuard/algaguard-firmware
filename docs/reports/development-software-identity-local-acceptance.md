@@ -3,7 +3,7 @@
 Status: **PASS**
 
 - Branch: `feat/secure-credential-storage`
-- Git HEAD: `480131d1f94e68740c7dd41432cd9d8cc5d773a8`
+- Git HEAD: `b2883ad62353a8745dee5fec96b0689254200519`
 - Worktree dirty: `true` (preserved phase work)
 - Hardware runtime validation: not performed
 
@@ -22,9 +22,9 @@ Status: **PASS**
 
 | Environment | RAM | Flash | Image bytes | SHA-256 prefix | Profile |
 |---|---:|---:|---:|---|---|
-| `esp32-s3-devkitc-1` | 16908 | 226005 | 226432 | `303ef19f424a` | `DEFAULT_DEVELOPMENT` |
-| `esp32-s3-dev-software-key` | 16908 | 226213 | 226640 | `e7cca741ecb3` | `INSECURE_DEVELOPMENT_IDENTITY` |
-| `esp32-s3-dev-software-identity-self-test` | 16908 | 226213 | 226640 | `4948e5aa108b` | `INSECURE_DEVELOPMENT_SELF_TEST` |
+| `esp32-s3-devkitc-1` | 16908 | 226005 | 226432 | `1f3dcf0c784f` | `DEFAULT_DEVELOPMENT` |
+| `esp32-s3-dev-software-key` | 16908 | 226213 | 226640 | `bdb6b22bf309` | `INSECURE_DEVELOPMENT_IDENTITY` |
+| `esp32-s3-dev-software-identity-self-test` | 16908 | 226213 | 226640 | `e47ec0848b14` | `INSECURE_DEVELOPMENT_SELF_TEST` |
 
 ## Acceptance gates
 
