@@ -10,7 +10,7 @@
       "esp32-s3-dev-software-key/firmware.bin",
       "esp32-s3-dev-software-identity-self-test/firmware.bin"
     ],
-    "manifestSha256": "803fb472943d1b8b6b8a97d459f288632d9a773ecaf80ef8f0656bbef02db19b",
+    "manifestSha256": "512f1b57ff6b819efc77e88eb9c373f17b933847a077ea0b5db8ecfa7ca59eb9",
     "path": ".pio/artifacts/firmware-development-unsigned/",
     "productionEligible": false,
     "scanOverallStatus": "PASS",
@@ -64,7 +64,7 @@
     "yamlParserAvailable": true,
     "yamlSyntax": true
   },
-  "gitHead": "b2883ad62353a8745dee5fec96b0689254200519",
+  "gitHead": "a46eccb0cffc5cfa90e34199204c0e1ad11eb26e",
   "guardScenarios": {
     "count": 7,
     "scenarios": [
@@ -141,7 +141,7 @@
   "phase": "AlgaGuard Development Software Identity - Micro-Sprint 11",
   "schemaVersion": 1,
   "secretScan": {
-    "filesScanned": 21,
+    "filesScanned": 19,
     "findingCount": 0,
     "safeRuleReferenceCount": 0,
     "status": "PASS"
@@ -177,7 +177,7 @@
       },
       "securityProfile": "DEFAULT_DEVELOPMENT",
       "selfTestCompileOnly": false,
-      "sha256": "1f3dcf0c784fd57faf69f0908b5cadc921293627654eb3d9dde7b0b73700c1f3",
+      "sha256": "b831d527562ef3bec8bf0518422938b32af7291cf312022188bb8dac4de17f89",
       "signed": false,
       "status": "PASS",
       "toolchainVersion": "15.2.0+20251204",
@@ -214,7 +214,7 @@
       },
       "securityProfile": "INSECURE_DEVELOPMENT_IDENTITY",
       "selfTestCompileOnly": false,
-      "sha256": "bdb6b22bf309dae24e649806b530ac694a5535a07b7df10fc98ddfd002b16450",
+      "sha256": "ab5f7b2e7021fbccd70d6a80d35bd06253fe87cde57395171ecd6a97d3f10e8d",
       "signed": false,
       "status": "PASS",
       "toolchainVersion": "15.2.0+20251204",
@@ -251,7 +251,7 @@
       },
       "securityProfile": "INSECURE_DEVELOPMENT_SELF_TEST",
       "selfTestCompileOnly": true,
-      "sha256": "e47ec0848b1420ebe56802f4b5836ac2bd766f02d60509b254cfd835d93b5362",
+      "sha256": "eaa42b4f87c3aa9e8666c129ddd2263d96778b1a1b8be14cb160ae8758a6384f",
       "signed": false,
       "status": "PASS",
       "toolchainVersion": "15.2.0+20251204",

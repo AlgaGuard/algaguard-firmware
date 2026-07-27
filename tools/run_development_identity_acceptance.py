@@ -584,11 +584,12 @@ def diff_verification(process_environment: dict[str, str]) -> dict:
         environment=process_environment,
     )
     python_files = [relative for relative in changed_paths() if relative.endswith(".py")]
-    run_command(
-        "Python syntax checks",
-        [sys.executable, "-m", "py_compile", *python_files],
-        environment=process_environment,
-    )
+    if python_files:
+        run_command(
+            "Python syntax checks",
+            [sys.executable, "-m", "py_compile", *python_files],
+            environment=process_environment,
+        )
     workflow = inspect_workflow(ROOT / ".github/workflows/ci.yml")
     if set(workflow.jobs) != {
         "validate",

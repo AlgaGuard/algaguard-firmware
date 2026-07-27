@@ -22,7 +22,9 @@ jobs:
       - name: Install validation tools
         run: python -m pip install platformio pytest
       - name: Security profile guard scenarios
-        run: python tools/security_profile_guard_runner.py
+        run: >-
+          python tools/security_profile_guard_runner.py
+          --report "$RUNNER_TEMP/security-profile-guard-report.json"
       - name: Security profile guard tests
         run: python -m pytest test/test_security_profile_guard_runner.py -q
       - name: Artifact security tests
