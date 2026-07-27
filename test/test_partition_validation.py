@@ -77,6 +77,15 @@ class PartitionValidationTest(unittest.TestCase):
             safety_margin=1024 * 1024,
         )
 
+    def test_development_identity_nvs_has_two_slot_capacity_margin(self) -> None:
+        partitions = {item.name: item for item in load_partitions(PROJECT_ROOT / "partitions.csv")}
+        self.assertEqual(partitions["nvs"].size, 0x10000)
+        # Pinned PSA bound: RSA-3072 DER (1,787), certificate (4 KiB), CA chain
+        # (12 KiB), metadata (512), plus 25% NVS entry/page overhead.
+        one_slot = 1787 + 4096 + 12288 + 512
+        required = (2 * one_slot * 125 + 99) // 100
+        self.assertLessEqual(required, partitions["nvs"].size)
+
     def test_missing_otadata_is_rejected(self) -> None:
         partitions = [
             Partition("nvs", "data", "nvs", 0x9000, 0x6000),
