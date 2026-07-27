@@ -1,0 +1,318 @@
+{
+  "artifactVerification": {
+    "artifactCount": 3,
+    "artifactSetName": "firmware-development-unsigned",
+    "deterministic": true,
+    "fileAllowlist": [
+      "manifest.json",
+      "scan-report.json",
+      "esp32-s3-devkitc-1/firmware.bin",
+      "esp32-s3-dev-software-key/firmware.bin",
+      "esp32-s3-dev-software-identity-self-test/firmware.bin"
+    ],
+    "manifestSha256": "9a2139ae855046e85e3a508dfe064199f22269d27abbc64952bf61cfc302714e",
+    "path": ".pio/artifacts/firmware-development-unsigned/",
+    "productionEligible": false,
+    "scanOverallStatus": "PASS",
+    "scanReportSha256": "31dc3af5e3e343b21b71345f957beaf363348967755afc6d9a2361d728ed32d0",
+    "signed": false,
+    "status": "PASS"
+  },
+  "branch": "feat/secure-credential-storage",
+  "ciPathVerification": {
+    "artifactUploadExecuted": false,
+    "matrixEnvironments": [
+      "esp32-s3-devkitc-1",
+      "esp32-s3-dev-software-key",
+      "esp32-s3-dev-software-identity-self-test"
+    ],
+    "productionPathPresent": false,
+    "releaseExecuted": false,
+    "remoteWorkflowTriggered": false,
+    "signingExecuted": false,
+    "status": "PASS",
+    "transferAllowlist": "scanned-development-firmware-<environment>/firmware.bin"
+  },
+  "cleanupVerification": {
+    "artifactStagingTemporaryDirectories": 0,
+    "ciAggregationTemporaryDirectories": 0,
+    "guardProbeTemporaryDirectories": 0,
+    "hostCryptoFixtureDirectories": 0,
+    "hostRecordValidationDirectories": 0,
+    "status": "PASS"
+  },
+  "completedStatuses": [
+    "HOST_TLS_IDENTITY_RECONSTRUCTION_COMPLETE",
+    "HOST_IDENTITY_VIEW_MODEL_COMPLETE",
+    "SECURITY_PROFILE_GUARD_AUTOMATION_COMPLETE",
+    "TARGET_TLS_ADAPTER_COMPILE_PROVEN",
+    "TARGET_SOFTWARE_IDENTITY_BUILD_MATRIX_COMPLETE",
+    "LOCAL_IDENTITY_ARTIFACT_STAGING_COMPLETE",
+    "CI_IDENTITY_ARTIFACT_PIPELINE_COMPLETE",
+    "DEVELOPMENT_IDENTITY_LOCAL_ACCEPTANCE_COMPLETE"
+  ],
+  "diffVerification": {
+    "actionlintAvailable": false,
+    "blackAvailable": false,
+    "clangFormatAvailable": false,
+    "cppcheckAvailable": false,
+    "gitDiffCheck": true,
+    "pythonSyntax": true,
+    "reportDeterministic": true,
+    "status": "PASS",
+    "workflowStaticInspection": true,
+    "yamlParserAvailable": true,
+    "yamlSyntax": true
+  },
+  "gitHead": "480131d1f94e68740c7dd41432cd9d8cc5d773a8",
+  "guardScenarios": {
+    "count": 7,
+    "scenarios": [
+      {
+        "classification": "GUARD_PASS",
+        "name": "default-development"
+      },
+      {
+        "classification": "EXPECTED_GUARD_REJECTION",
+        "name": "dev-software-key-without-opt-in"
+      },
+      {
+        "classification": "GUARD_PASS",
+        "name": "dev-software-key-with-opt-in"
+      },
+      {
+        "classification": "EXPECTED_GUARD_REJECTION",
+        "name": "production-with-dev-software-key"
+      },
+      {
+        "classification": "EXPECTED_GUARD_REJECTION",
+        "name": "ds-with-dev-software-key"
+      },
+      {
+        "classification": "EXPECTED_GUARD_REJECTION",
+        "name": "production-with-dev-identity-self-test"
+      },
+      {
+        "classification": "GUARD_PASS",
+        "name": "self-test-with-dev-software-key-and-opt-in"
+      }
+    ],
+    "status": "PASS"
+  },
+  "overallStatus": "PASS",
+  "partitionVerification": {
+    "alignmentGap": {
+      "end": "0x20000",
+      "sizeBytes": 16384,
+      "start": "0x1C000"
+    },
+    "builtTablesMatch": true,
+    "imageFitsBothSlots": true,
+    "layout": [
+      {
+        "name": "nvs",
+        "offset": "0x9000",
+        "sizeBytes": 65536
+      },
+      {
+        "name": "otadata",
+        "offset": "0x19000",
+        "sizeBytes": 8192
+      },
+      {
+        "name": "phy_init",
+        "offset": "0x1B000",
+        "sizeBytes": 4096
+      },
+      {
+        "name": "ota_0",
+        "offset": "0x20000",
+        "sizeBytes": 6291456
+      },
+      {
+        "name": "ota_1",
+        "offset": "0x620000",
+        "sizeBytes": 6291456
+      }
+    ],
+    "noOverlap": true,
+    "status": "PASS"
+  },
+  "phase": "AlgaGuard Development Software Identity - Micro-Sprint 11",
+  "schemaVersion": 1,
+  "secretScan": {
+    "filesScanned": 63,
+    "findingCount": 0,
+    "safeRuleReferenceCount": 4,
+    "status": "PASS"
+  },
+  "targetBuilds": [
+    {
+      "dsIdentityAbsent": true,
+      "environment": "esp32-s3-devkitc-1",
+      "flash": {
+        "percent": 3.6,
+        "totalBytes": 6291456,
+        "usedBytes": 226005
+      },
+      "frameworkVersion": "6.0.1",
+      "imageSizeBytes": 226432,
+      "insecureStorageOptIn": false,
+      "partitionTable": "partitions.csv",
+      "platformVersion": "7.0.1",
+      "productionEligible": false,
+      "profileChecks": {
+        "devSoftwareKeyExpected": false,
+        "devSoftwareKeyPresent": false,
+        "devSoftwareKeyValid": true,
+        "passed": true,
+        "warningExpected": false,
+        "warningPresent": false,
+        "warningValid": true
+      },
+      "ram": {
+        "percent": 5.2,
+        "totalBytes": 327680,
+        "usedBytes": 16908
+      },
+      "securityProfile": "DEFAULT_DEVELOPMENT",
+      "selfTestCompileOnly": false,
+      "sha256": "303ef19f424acc9775c39b9c26d45db5769888f2d1186a862c3d1186242f168d",
+      "signed": false,
+      "status": "PASS",
+      "toolchainVersion": "15.2.0+20251204",
+      "warningPresent": false,
+      "warningRequired": false
+    },
+    {
+      "dsIdentityAbsent": true,
+      "environment": "esp32-s3-dev-software-key",
+      "flash": {
+        "percent": 3.6,
+        "totalBytes": 6291456,
+        "usedBytes": 226213
+      },
+      "frameworkVersion": "6.0.1",
+      "imageSizeBytes": 226640,
+      "insecureStorageOptIn": true,
+      "partitionTable": "partitions.csv",
+      "platformVersion": "7.0.1",
+      "productionEligible": false,
+      "profileChecks": {
+        "devSoftwareKeyExpected": true,
+        "devSoftwareKeyPresent": true,
+        "devSoftwareKeyValid": true,
+        "passed": true,
+        "warningExpected": true,
+        "warningPresent": true,
+        "warningValid": true
+      },
+      "ram": {
+        "percent": 5.2,
+        "totalBytes": 327680,
+        "usedBytes": 16908
+      },
+      "securityProfile": "INSECURE_DEVELOPMENT_IDENTITY",
+      "selfTestCompileOnly": false,
+      "sha256": "e7cca741ecb30d8a36987c55fd8a91c0179992d3a4d05e3aacdec1b77d4aa8e5",
+      "signed": false,
+      "status": "PASS",
+      "toolchainVersion": "15.2.0+20251204",
+      "warningPresent": true,
+      "warningRequired": true
+    },
+    {
+      "dsIdentityAbsent": true,
+      "environment": "esp32-s3-dev-software-identity-self-test",
+      "flash": {
+        "percent": 3.6,
+        "totalBytes": 6291456,
+        "usedBytes": 226213
+      },
+      "frameworkVersion": "6.0.1",
+      "imageSizeBytes": 226640,
+      "insecureStorageOptIn": true,
+      "partitionTable": "partitions.csv",
+      "platformVersion": "7.0.1",
+      "productionEligible": false,
+      "profileChecks": {
+        "devSoftwareKeyExpected": true,
+        "devSoftwareKeyPresent": true,
+        "devSoftwareKeyValid": true,
+        "passed": true,
+        "warningExpected": true,
+        "warningPresent": true,
+        "warningValid": true
+      },
+      "ram": {
+        "percent": 5.2,
+        "totalBytes": 327680,
+        "usedBytes": 16908
+      },
+      "securityProfile": "INSECURE_DEVELOPMENT_SELF_TEST",
+      "selfTestCompileOnly": true,
+      "sha256": "4948e5aa108b7c6930c4ebfb5ae5310900791d6ff416a0040d31abea96f468a9",
+      "signed": false,
+      "status": "PASS",
+      "toolchainVersion": "15.2.0+20251204",
+      "warningPresent": true,
+      "warningRequired": true
+    }
+  ],
+  "testSuites": [
+    {
+      "name": "native",
+      "result": "144/144",
+      "status": "PASS"
+    },
+    {
+      "name": "Python guard tests",
+      "result": "7/7",
+      "status": "PASS"
+    },
+    {
+      "name": "artifact-security tests",
+      "result": "8/8",
+      "status": "PASS"
+    },
+    {
+      "name": "workflow static tests",
+      "result": "8/8",
+      "status": "PASS"
+    },
+    {
+      "name": "security preflight tests",
+      "result": "1/1",
+      "status": "PASS"
+    },
+    {
+      "name": "legacy artifact scanner tests",
+      "result": "3/3",
+      "status": "PASS"
+    },
+    {
+      "name": "partition board and image tests",
+      "result": "10/10",
+      "status": "PASS"
+    },
+    {
+      "name": "contract fixture guard",
+      "result": "PASS",
+      "status": "PASS"
+    }
+  ],
+  "tlsAdapterVerification": {
+    "caBufferAssignment": true,
+    "classification": "TARGET_TLS_ADAPTER_COMPILE_PROVEN",
+    "clientCertificateBufferAssignment": true,
+    "dsDataAbsent": true,
+    "espTlsCfgCompatible": true,
+    "hostMockSubstituted": false,
+    "privateKeyBufferAssignment": true,
+    "runtimeConnectionClaimed": false,
+    "softwareTlsIdentityCompiled": true,
+    "status": "PASS"
+  },
+  "unresolvedBlockers": [],
+  "worktreeDirty": true
+}

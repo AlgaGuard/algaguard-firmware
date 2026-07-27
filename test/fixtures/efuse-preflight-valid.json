@@ -1,0 +1,15 @@
+{
+  "chip": "ESP32-S3",
+  "secureBoot": false,
+  "flashEncryption": false,
+  "downloadDisabled": false,
+  "jtagDisabled": false,
+  "keyPurposes": {
+    "KEY0": "HMAC_DOWN_DS",
+    "KEY1": "HMAC_UP",
+    "KEY2": "XTS_AES_128_KEY",
+    "KEY3": "SECURE_BOOT_DIGEST",
+    "KEY4": "USER",
+    "KEY5": "USER"
+  }
+}

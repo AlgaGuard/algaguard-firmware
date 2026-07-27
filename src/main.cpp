@@ -243,7 +243,13 @@ class EspFoundationServices final : public algaguard::StartupServices {
               algaguard::StartupReason::kModuleUnavailable};
     const auto boot =
         algaguard::boot_screen(algaguard::active_firmware_config());
-    if (render_screen(boot) != ESP_OK)
+    auto screen = boot;
+#if defined(ALGAGUARD_SECURITY_PROFILE_DEV_SOFTWARE_KEY)
+    screen.lines[2] = "INSECURE DEV KEY";
+    screen.lines[3] = "DEV SOFTWARE KEY";
+    ESP_LOGW(kTag, "security_profile=DEV_SOFTWARE_KEY warning=SOFTWARE_PRIVATE_KEY_IN_USE");
+#endif
+    if (render_screen(screen) != ESP_OK)
       return {algaguard::OperationStatus::kRecoverableFailure,
               algaguard::StartupReason::kModuleUnavailable};
     return {algaguard::OperationStatus::kSuccess};
@@ -307,7 +313,11 @@ void render_startup_state() {
   if (last_state == startup.state()) return;
   last_state = startup.state();
   const auto screen = algaguard::state_screen(startup.state(), startup.reason());
-  const esp_err_t result = render_screen(screen);
+  auto visible_screen = screen;
+#if defined(ALGAGUARD_SECURITY_PROFILE_DEV_SOFTWARE_KEY)
+  visible_screen.lines[3] = "INSECURE DEV KEY";
+#endif
+  const esp_err_t result = render_screen(visible_screen);
   if (result != ESP_OK)
     ESP_LOGE(kTag, "display_update_failed code=%s",
              esp_err_to_name(result));

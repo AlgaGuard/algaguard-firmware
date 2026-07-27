@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "authoritativeGuardHeader": "include/algaguard/security_profile_guards.hpp",
+  "probeSource": "test/guard_probe/security_profile_guard_probe.cpp",
+  "compilerIdentity": "g++.EXE (Rev2, Built by MSYS2 project) 14.2.0",
+  "scenarioCount": 7,
+  "scenarios": [
+    {
+      "name": "default-development",
+      "expected": "PASS",
+      "actual": "PASS",
+      "classification": "GUARD_PASS",
+      "exitCode": 0,
+      "expectedGuardIdentifier": "",
+      "matchedGuardIdentifier": ""
+    },
+    {
+      "name": "dev-software-key-without-opt-in",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "classification": "EXPECTED_GUARD_REJECTION",
+      "exitCode": 1,
+      "expectedGuardIdentifier": "ALGAGUARD_GUARD_DEV_SOFTWARE_KEY_REQUIRES_INSECURE_STORAGE_OPT_IN",
+      "matchedGuardIdentifier": "ALGAGUARD_GUARD_DEV_SOFTWARE_KEY_REQUIRES_INSECURE_STORAGE_OPT_IN"
+    },
+    {
+      "name": "dev-software-key-with-opt-in",
+      "expected": "PASS",
+      "actual": "PASS",
+      "classification": "GUARD_PASS",
+      "exitCode": 0,
+      "expectedGuardIdentifier": "",
+      "matchedGuardIdentifier": ""
+    },
+    {
+      "name": "production-with-dev-software-key",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "classification": "EXPECTED_GUARD_REJECTION",
+      "exitCode": 1,
+      "expectedGuardIdentifier": "ALGAGUARD_GUARD_PRODUCTION_FORBIDS_DEV_SOFTWARE_KEY",
+      "matchedGuardIdentifier": "ALGAGUARD_GUARD_PRODUCTION_FORBIDS_DEV_SOFTWARE_KEY"
+    },
+    {
+      "name": "ds-with-dev-software-key",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "classification": "EXPECTED_GUARD_REJECTION",
+      "exitCode": 1,
+      "expectedGuardIdentifier": "ALGAGUARD_GUARD_DS_AND_DEV_SOFTWARE_KEY_MUTUALLY_EXCLUSIVE",
+      "matchedGuardIdentifier": "ALGAGUARD_GUARD_DS_AND_DEV_SOFTWARE_KEY_MUTUALLY_EXCLUSIVE"
+    },
+    {
+      "name": "production-with-dev-identity-self-test",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "classification": "EXPECTED_GUARD_REJECTION",
+      "exitCode": 1,
+      "expectedGuardIdentifier": "ALGAGUARD_GUARD_PRODUCTION_FORBIDS_DEV_IDENTITY_SELF_TEST",
+      "matchedGuardIdentifier": "ALGAGUARD_GUARD_PRODUCTION_FORBIDS_DEV_IDENTITY_SELF_TEST"
+    },
+    {
+      "name": "self-test-with-dev-software-key-and-opt-in",
+      "expected": "PASS",
+      "actual": "PASS",
+      "classification": "GUARD_PASS",
+      "exitCode": 0,
+      "expectedGuardIdentifier": "",
+      "matchedGuardIdentifier": ""
+    }
+  ],
+  "overallStatus": "PASS"
+}
