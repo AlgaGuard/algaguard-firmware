@@ -73,7 +73,7 @@ struct RuntimeBoardProfile {
   bool chip_is_esp32s3{};
   bool partition_layout_valid{};
   bool oled_initialized{};
-  [[maybe_unused]] bool physical_test_core_ready{};
+  bool physical_test_core_ready{};
 };
 
 i2c_master_bus_handle_t oled_bus{};
