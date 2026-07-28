@@ -3,7 +3,7 @@ name: Firmware Development Artifact CI
 on:
   pull_request:
   push:
-    branches: [develop]
+    branches: [develop, feat/ble-wifi-provisioning]
 
 permissions:
   contents: read
