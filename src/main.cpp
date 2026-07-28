@@ -73,7 +73,7 @@ struct RuntimeBoardProfile {
   bool chip_is_esp32s3{};
   bool partition_layout_valid{};
   bool oled_initialized{};
-  bool physical_test_core_ready{};
+  [[maybe_unused]] bool physical_test_core_ready{};
 };
 
 i2c_master_bus_handle_t oled_bus{};
@@ -454,8 +454,6 @@ void render_startup_state() {
   if (last_state == startup.state()) return;
 #endif
   last_state = startup.state();
-  const auto screen = algaguard::state_screen(startup.state(), startup.reason());
-  auto visible_screen = screen;
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
   auto physical_state =
       advertising.stage == algaguard::BleAdvertisingStage::kAdvStartOk
@@ -478,7 +476,9 @@ void render_startup_state() {
     else if (physical_session_installer.state() == algaguard::PhysicalSessionInstallerState::kRejected)
       physical_state = algaguard::PhysicalTestState::kSessionInstallRejected;
   }
-  visible_screen = algaguard::physical_test_screen(physical_state, advertising.returnCode);
+  auto visible_screen = algaguard::physical_test_screen(physical_state, advertising.returnCode);
+#else
+  auto visible_screen = algaguard::state_screen(startup.state(), startup.reason());
 #endif
 #if defined(ALGAGUARD_SECURITY_PROFILE_DEV_SOFTWARE_KEY)
   visible_screen.lines[3] = "INSECURE DEV KEY";
