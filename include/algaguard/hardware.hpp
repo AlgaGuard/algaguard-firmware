@@ -2,6 +2,8 @@
 #include <cstdint>
 
 namespace algaguard::hardware {
+// Current shared ESP32-S3 physical OLED module address. The physical-test
+// profile probes this exact seven-bit address; it never scans the whole bus.
 constexpr std::uint8_t kOledAddress = 0x3C;
 constexpr int kSda = 8;
 constexpr int kScl = 9;

@@ -3,7 +3,7 @@
   "authoritativeGuardHeader": "include/algaguard/security_profile_guards.hpp",
   "probeSource": "test/guard_probe/security_profile_guard_probe.cpp",
   "compilerIdentity": "g++.EXE (Rev2, Built by MSYS2 project) 14.2.0",
-  "scenarioCount": 7,
+  "scenarioCount": 9,
   "scenarios": [
     {
       "name": "default-development",
@@ -67,6 +67,24 @@
       "exitCode": 0,
       "expectedGuardIdentifier": "",
       "matchedGuardIdentifier": ""
+    },
+    {
+      "name": "physical-test-development",
+      "expected": "PASS",
+      "actual": "PASS",
+      "classification": "GUARD_PASS",
+      "exitCode": 0,
+      "expectedGuardIdentifier": "",
+      "matchedGuardIdentifier": ""
+    },
+    {
+      "name": "production-with-physical-test",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "classification": "EXPECTED_GUARD_REJECTION",
+      "exitCode": 1,
+      "expectedGuardIdentifier": "ALGAGUARD_GUARD_PRODUCTION_FORBIDS_PHYSICAL_TEST",
+      "matchedGuardIdentifier": "ALGAGUARD_GUARD_PRODUCTION_FORBIDS_PHYSICAL_TEST"
     }
   ],
   "overallStatus": "PASS"

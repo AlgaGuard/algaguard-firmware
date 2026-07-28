@@ -1,11 +1,17 @@
 #include "algaguard/config.hpp"
+#include "algaguard/ble_provisioning_transport.hpp"
+#include "algaguard/esp_idf_wifi_connection_adapter.hpp"
 #include "algaguard/credentials.hpp"
 #include "algaguard/display.hpp"
 #include "algaguard/hardware.hpp"
+#include "algaguard/physical_test_harness.hpp"
+#include "algaguard/physical_provisioning_runtime_bridge.hpp"
 #include "algaguard/startup.hpp"
+#include "algaguard/wifi_connection_runtime.hpp"
 
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
+#include "driver/uart.h"
 #include "esp_app_desc.h"
 #include "esp_chip_info.h"
 #include "esp_flash.h"
@@ -19,6 +25,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdio>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -37,6 +44,17 @@ algaguard::DebouncedButton up_button;
 algaguard::DebouncedButton down_button;
 algaguard::DebouncedButton select_button;
 algaguard::DebouncedButton back_button;
+algaguard::EspIdfBleProvisioningTransport ble_provisioning_transport;
+algaguard::EspIdfWifiConnectionAdapter wifi_connection_adapter;
+algaguard::WifiConnectionRuntime wifi_connection_runtime{wifi_connection_adapter};
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+algaguard::PhysicalTestSessionInstaller physical_session_installer;
+algaguard::PhysicalProvisioningRuntimeBridge physical_runtime_bridge;
+algaguard::PhysicalSessionControlProtocol physical_session_protocol;
+bool physical_session_console_ready{};
+void initialize_physical_session_console();
+void poll_physical_session_console();
+#endif
 
 static_assert(ALGAGUARD_MQTT_MAX_BATCH_SAMPLES <= 120,
               "MQTT batch exceeds released contract");
@@ -52,10 +70,16 @@ struct RuntimeBoardProfile {
   const char* firmware_version{"unknown"};
   bool psram_available{};
   bool expected_n16r8{};
+  bool chip_is_esp32s3{};
+  bool partition_layout_valid{};
+  bool oled_initialized{};
+  bool physical_test_core_ready{};
 };
 
 i2c_master_bus_handle_t oled_bus{};
 i2c_master_dev_handle_t oled_device{};
+std::uint8_t oled_active_address{algaguard::hardware::kOledAddress};
+bool oled_address_detected{};
 
 esp_err_t oled_command(std::uint8_t command) {
   const std::array<std::uint8_t, 2> payload{0x00, command};
@@ -180,9 +204,20 @@ esp_err_t configure_oled_i2c() {
   esp_err_t result = i2c_new_master_bus(&bus_config, &oled_bus);
   if (result != ESP_OK) return result;
 
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+  // The address was measured over the USB-only physical-test harness. This is
+  // deliberately an exact probe, never a general I2C bus scan.
+  if (i2c_master_probe(oled_bus, algaguard::hardware::kOledAddress, 100) != ESP_OK) {
+    i2c_del_master_bus(oled_bus);
+    oled_bus = nullptr;
+    return ESP_ERR_NOT_FOUND;
+  }
+  oled_address_detected = true;
+#endif
+
   i2c_device_config_t device_config{};
   device_config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
-  device_config.device_address = algaguard::hardware::kOledAddress;
+  device_config.device_address = oled_active_address;
   device_config.scl_speed_hz = 400000;
   result =
       i2c_master_bus_add_device(oled_bus, &device_config, &oled_device);
@@ -198,11 +233,57 @@ esp_err_t configure_oled_i2c() {
     result = oled_command(command);
     if (result != ESP_OK) return result;
   }
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+  ESP_LOGI(kTag, "OLED_ADDRESS_OK address=0x%02X", static_cast<unsigned>(oled_active_address));
+#endif
   return ESP_OK;
 }
 
 void apply_leds(algaguard::StartupState state,
                 bool remote_indicator = false) {
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+  if (state != algaguard::StartupState::kFault) {
+    const auto advertising = ble_provisioning_transport.advertisingRuntimeStatus();
+    algaguard::PhysicalTestState physical_state =
+        advertising.stage == algaguard::BleAdvertisingStage::kAdvStartOk
+            ? algaguard::PhysicalTestState::kBleAdvertisingActive
+            : advertising.stage == algaguard::BleAdvertisingStage::kAdvStartFailed
+                  ? algaguard::PhysicalTestState::kBleAdvertisingFailed
+                  : algaguard::PhysicalTestState::kBleAdvertisingInitializing;
+    switch (wifi_connection_runtime.state()) {
+      case algaguard::WifiConnectionState::kConnecting:
+      case algaguard::WifiConnectionState::kRetryWait:
+        physical_state = algaguard::PhysicalTestState::kWifiConnecting;
+        break;
+      case algaguard::WifiConnectionState::kConnected:
+        physical_state = algaguard::PhysicalTestState::kWifiConnected;
+        break;
+      case algaguard::WifiConnectionState::kAuthFailed:
+        physical_state = algaguard::PhysicalTestState::kAuthFailed;
+        break;
+      case algaguard::WifiConnectionState::kNetworkNotFound:
+        physical_state = algaguard::PhysicalTestState::kNetworkNotFound;
+        break;
+      case algaguard::WifiConnectionState::kTimedOut:
+        physical_state = algaguard::PhysicalTestState::kTimedOut;
+        break;
+      case algaguard::WifiConnectionState::kCancelled:
+        physical_state = algaguard::PhysicalTestState::kCancelled;
+        break;
+      default:
+        break;
+    }
+    const auto pattern = algaguard::physical_test_led_pattern(physical_state);
+    const bool illuminated = !pattern.blink || (xTaskGetTickCount() / 10U) % 2U == 0;
+    gpio_set_level(static_cast<gpio_num_t>(algaguard::hardware::kLedRed),
+                   pattern.red && illuminated);
+    gpio_set_level(static_cast<gpio_num_t>(algaguard::hardware::kLedGreen),
+                   pattern.green && illuminated);
+    gpio_set_level(static_cast<gpio_num_t>(algaguard::hardware::kLedBlue),
+                   pattern.blue && illuminated);
+    return;
+  }
+#endif
   const auto leds = algaguard::startup_led_state(state, remote_indicator);
   gpio_set_level(static_cast<gpio_num_t>(algaguard::hardware::kLedRed),
                  leds.red);
@@ -226,6 +307,15 @@ class EspFoundationServices final : public algaguard::StartupServices {
       return {algaguard::OperationStatus::kFatalFailure,
               algaguard::StartupReason::kFatalModuleFailure};
     profile_mismatch_ = !board_.expected_n16r8;
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+    const auto preflight = algaguard::physical_board_preflight(
+        {board_.chip_is_esp32s3, board_.flash_bytes, board_.psram_available,
+         board_.psram_bytes, board_.partition_layout_valid, true, board_.oled_initialized});
+    board_.physical_test_core_ready = preflight.safeForReadiness;
+    if (!board_.physical_test_core_ready)
+      return {algaguard::OperationStatus::kFatalFailure,
+              algaguard::StartupReason::kBoardProfileMismatch};
+#endif
     return {algaguard::OperationStatus::kSuccess};
   }
 
@@ -234,13 +324,45 @@ class EspFoundationServices final : public algaguard::StartupServices {
     if (result != ESP_OK)
       return {algaguard::OperationStatus::kRecoverableFailure,
               algaguard::StartupReason::kStorageUnavailable};
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+    ble_provisioning_transport.recordAdvertisingStage(
+        algaguard::BleAdvertisingStage::kNvsReady, result);
+#endif
+    wifi_connection_adapter.setRuntime(&wifi_connection_runtime);
+    if (!wifi_connection_adapter.init() || !wifi_connection_adapter.start())
+      return {algaguard::OperationStatus::kRecoverableFailure,
+              algaguard::StartupReason::kModuleUnavailable};
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+    initialize_physical_session_console();
+    ESP_LOGI(kTag, "WIFI_RUNTIME_READY_NOT_CONNECTED persistence=false");
+    ESP_LOGI(kTag, "%s", algaguard::physical_wifi_gate_state_code(
+                 algaguard::physical_wifi_connect_gate.state()).data());
+    ESP_LOGI(kTag, "%s", algaguard::physical_session_state_code(physical_session_installer.state()).data());
+#endif
     return {algaguard::OperationStatus::kSuccess};
   }
 
   algaguard::StartupResult display_init() override {
-    if (configure_oled_i2c() != ESP_OK)
+    board_.oled_initialized = configure_oled_i2c() == ESP_OK;
+    if (!board_.oled_initialized)
       return {algaguard::OperationStatus::kRecoverableFailure,
               algaguard::StartupReason::kModuleUnavailable};
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+    const auto preflight = algaguard::physical_board_preflight(
+        {board_.chip_is_esp32s3, board_.flash_bytes, board_.psram_available,
+         board_.psram_bytes, board_.partition_layout_valid, true, board_.oled_initialized});
+    if (!preflight.displayValidated)
+      return {algaguard::OperationStatus::kRecoverableFailure,
+              algaguard::StartupReason::kModuleUnavailable};
+    const auto screen =
+        algaguard::physical_test_screen(algaguard::PhysicalTestState::kBleAdvertisingInitializing);
+    ESP_LOGW(kTag, "INSECURE DEVELOPMENT PHYSICAL TEST MODE preflight=%u",
+             static_cast<unsigned>(preflight.reason));
+    if (render_screen(screen) != ESP_OK)
+      return {algaguard::OperationStatus::kRecoverableFailure,
+              algaguard::StartupReason::kModuleUnavailable};
+    return {algaguard::OperationStatus::kSuccess};
+#else
     const auto boot =
         algaguard::boot_screen(algaguard::active_firmware_config());
     auto screen = boot;
@@ -253,6 +375,7 @@ class EspFoundationServices final : public algaguard::StartupServices {
       return {algaguard::OperationStatus::kRecoverableFailure,
               algaguard::StartupReason::kModuleUnavailable};
     return {algaguard::OperationStatus::kSuccess};
+#endif
   }
 
   algaguard::StartupResult input_init() override {
@@ -264,12 +387,20 @@ class EspFoundationServices final : public algaguard::StartupServices {
     if (profile_mismatch_)
       return {algaguard::OperationStatus::kRecoverableFailure,
               algaguard::StartupReason::kBoardProfileMismatch};
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+    if (!board_.physical_test_core_ready)
+      return {algaguard::OperationStatus::kFatalFailure,
+              algaguard::StartupReason::kBoardProfileMismatch};
+#endif
     return {algaguard::OperationStatus::kSuccess,
             algaguard::StartupReason::kNone, false, false, false};
   }
 
   algaguard::StartupResult start_ble_provisioning() override {
-    return not_implemented("BLE_PROVISIONING");
+    if (!ble_provisioning_transport.startGattService())
+      return {algaguard::OperationStatus::kRecoverableFailure,
+              algaguard::StartupReason::kModuleUnavailable};
+    return {algaguard::OperationStatus::kSuccess};
   }
   algaguard::StartupResult poll_wifi() override {
     return not_implemented("WIFI");
@@ -310,10 +441,45 @@ algaguard::StartupStateMachine startup{services};
 
 void render_startup_state() {
   static auto last_state = static_cast<algaguard::StartupState>(255);
+  static auto last_advertising_stage = static_cast<algaguard::BleAdvertisingStage>(255);
+  static std::int32_t last_advertising_code{};
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+  const auto advertising = ble_provisioning_transport.advertisingRuntimeStatus();
+  if (last_state == startup.state() && last_advertising_stage == advertising.stage &&
+      last_advertising_code == advertising.returnCode)
+    return;
+  last_advertising_stage = advertising.stage;
+  last_advertising_code = advertising.returnCode;
+#else
   if (last_state == startup.state()) return;
+#endif
   last_state = startup.state();
   const auto screen = algaguard::state_screen(startup.state(), startup.reason());
   auto visible_screen = screen;
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+  auto physical_state =
+      advertising.stage == algaguard::BleAdvertisingStage::kAdvStartOk
+          ? algaguard::PhysicalTestState::kBleAdvertisingActive
+          : advertising.stage == algaguard::BleAdvertisingStage::kAdvStartFailed
+                ? algaguard::PhysicalTestState::kBleAdvertisingFailed
+                : algaguard::PhysicalTestState::kBleAdvertisingInitializing;
+  if (advertising.stage != algaguard::BleAdvertisingStage::kAdvStartFailed) {
+    const auto gateState = algaguard::physical_wifi_connect_gate.state();
+    if (gateState == algaguard::PhysicalWifiConnectGateState::kArmed)
+      physical_state = algaguard::PhysicalTestState::kConnectTestArmed;
+    else if (gateState == algaguard::PhysicalWifiConnectGateState::kConsumed)
+      physical_state = algaguard::PhysicalTestState::kConnectTestConsumed;
+    else if (gateState == algaguard::PhysicalWifiConnectGateState::kExpired)
+      physical_state = algaguard::PhysicalTestState::kConnectTestExpired;
+    else if (physical_runtime_bridge.handoffInstalled())
+      physical_state = algaguard::PhysicalTestState::kWifiHandoffReady;
+    else if (physical_session_installer.state() == algaguard::PhysicalSessionInstallerState::kArmed)
+      physical_state = algaguard::PhysicalTestState::kSessionArmed;
+    else if (physical_session_installer.state() == algaguard::PhysicalSessionInstallerState::kRejected)
+      physical_state = algaguard::PhysicalTestState::kSessionInstallRejected;
+  }
+  visible_screen = algaguard::physical_test_screen(physical_state, advertising.returnCode);
+#endif
 #if defined(ALGAGUARD_SECURITY_PROFILE_DEV_SOFTWARE_KEY)
   visible_screen.lines[3] = "INSECURE DEV KEY";
 #endif
@@ -326,9 +492,93 @@ void render_startup_state() {
            static_cast<unsigned>(startup.reason()));
 }
 
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+void initialize_physical_session_console() {
+  if (physical_session_console_ready) return;
+  if (!uart_is_driver_installed(UART_NUM_0) &&
+      uart_driver_install(UART_NUM_0, 1024, 0, 0, nullptr, 0) != ESP_OK) {
+    ESP_LOGW(kTag, "SESSION_INSTALL_REJECTED console_ready=false");
+    return;
+  }
+  physical_session_console_ready = true;
+  ESP_LOGI(kTag, "SESSION_INSTALLER_READY console=COM16 protocol=%u",
+           static_cast<unsigned>(algaguard::kPhysicalSessionProtocolVersion));
+}
+
+void poll_physical_session_console() {
+  if (!physical_session_console_ready) return;
+  std::array<std::uint8_t, 64> received{};
+  const auto count = uart_read_bytes(UART_NUM_0, received.data(), received.size(), 0);
+  if (count <= 0) return;
+  const auto acknowledgement = physical_session_protocol.ingest(
+      ble_provisioning_transport, physical_session_installer, received.data(),
+      static_cast<std::size_t>(count), static_cast<std::uint64_t>(xTaskGetTickCount()),
+      physical_runtime_bridge.handoffInstalled(),
+      wifi_connection_runtime.state() == algaguard::WifiConnectionState::kConnecting ||
+          wifi_connection_runtime.state() == algaguard::WifiConnectionState::kRetryWait);
+  if (!physical_session_protocol.awaitingFrame()) {
+    const auto code = algaguard::physical_session_ack_code(acknowledgement);
+    if (acknowledgement == algaguard::PhysicalSessionControlAck::kOledAddressQuery) {
+      char address[20]{};
+      const auto written = oled_address_detected
+                               ? std::snprintf(address, sizeof(address), "OLED_ADDRESS_0x%02X\n",
+                                               static_cast<unsigned>(oled_active_address))
+                               : std::snprintf(address, sizeof(address), "OLED_ADDRESS_NONE\n");
+      if (written > 0)
+        (void)uart_write_bytes(UART_NUM_0, address,
+                               static_cast<std::size_t>(written));
+    } else {
+      (void)uart_write_bytes(UART_NUM_0, code.data(), code.size());
+      (void)uart_write_bytes(UART_NUM_0, "\n", 1);
+    }
+    const auto gate = algaguard::physical_wifi_gate_state_code(
+        algaguard::physical_wifi_connect_gate.state());
+    const auto connectionActive =
+        wifi_connection_runtime.state() == algaguard::WifiConnectionState::kConnecting ||
+        wifi_connection_runtime.state() == algaguard::WifiConnectionState::kRetryWait;
+    ESP_LOGI(kTag, "%.*s gate=%.*s activeSessionPresent=%s handoffPresent=%s wifiRuntimeReady=true "
+             "connectAttemptActive=%s secretsCleared=%s", static_cast<int>(code.size()), code.data(),
+             static_cast<int>(gate.size()), gate.data(),
+             physical_session_installer.armed() ? "true" : "false",
+             physical_runtime_bridge.handoffInstalled() ? "true" : "false",
+             connectionActive ? "true" : "false",
+             physical_session_installer.secretsCleared() && wifi_connection_runtime.secretsCleared()
+                 ? "true" : "false");
+  }
+}
+#endif
+
 void startup_task(void*) {
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+  auto last_advertising_status = ble_provisioning_transport.advertisingRuntimeStatus();
+#endif
   while (true) {
     startup.tick();
+    ble_provisioning_transport.pollProvisioningTransport(
+        static_cast<std::uint64_t>(xTaskGetTickCount()));
+    wifi_connection_runtime.poll(static_cast<std::uint64_t>(xTaskGetTickCount()));
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+    poll_physical_session_console();
+    if (ble_provisioning_transport.latestSafeStatus().view().find("ACCEPTED") != std::string_view::npos &&
+        physical_runtime_bridge.onAccepted(ble_provisioning_transport, wifi_connection_runtime,
+                                           physical_session_installer)) {
+      physical_session_installer.markProcessingStarted();
+      ESP_LOGI(kTag, "WIFI_HANDOFF_INSTALLED connectExecutionEnabled=%s",
+               physical_runtime_bridge.connectExecutionEnabled() ? "true" : "false");
+    }
+    const auto advertising = ble_provisioning_transport.advertisingRuntimeStatus();
+    if (advertising.stage != last_advertising_status.stage ||
+        advertising.returnCode != last_advertising_status.returnCode ||
+        advertising.retryCount != last_advertising_status.retryCount ||
+        advertising.advertisingActive != last_advertising_status.advertisingActive) {
+      const auto diagnostic = algaguard::ble_advertising_safe_diagnostic(advertising);
+      ESP_LOGI(kTag, "%s", diagnostic.c_str());
+      last_advertising_status = advertising;
+    }
+    if (startup.state() == algaguard::StartupState::kUnprovisioned &&
+        board_profile.physical_test_core_ready)
+      (void)startup.begin_provisioning();
+#endif
     if (startup.state() >= algaguard::StartupState::kProvisioningStateLoad)
       apply_leds(startup.state());
     if (startup.state() >= algaguard::StartupState::kInputInit)
@@ -405,6 +655,7 @@ void input_task(void*) {
 extern "C" void app_main() {
   esp_chip_info_t chip{};
   esp_chip_info(&chip);
+  board_profile.chip_is_esp32s3 = chip.model == CHIP_ESP32S3;
   board_profile.chip_revision = chip.revision;
   board_profile.chip_cores = chip.cores;
   ESP_ERROR_CHECK(esp_flash_get_size(nullptr, &board_profile.flash_bytes));
@@ -418,6 +669,10 @@ extern "C" void app_main() {
       board_profile.psram_bytes >= kExpectedPsramBytes;
   const esp_partition_t* running = esp_ota_get_running_partition();
   if (running != nullptr) board_profile.running_partition = running->label;
+  board_profile.partition_layout_valid =
+      running != nullptr && esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                                     ESP_PARTITION_SUBTYPE_DATA_OTA,
+                                                     nullptr) != nullptr;
   const esp_app_desc_t* application = esp_app_get_description();
   if (application != nullptr)
     board_profile.firmware_version = application->version;
@@ -441,6 +696,11 @@ extern "C" void app_main() {
              "reason=BOARD_PROFILE_MISMATCH expected_flash=16777216 "
              "expected_psram=8388608");
 
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+  // Keep the read-only physical diagnostic channel available even when a
+  // display preflight fails, so a wiring/address fault can be diagnosed safely.
+  initialize_physical_session_console();
+#endif
   xTaskCreate(startup_task, "startup_state", 6144, nullptr, 8, nullptr);
   xTaskCreate(input_task, "buttons", 4096, nullptr, 5, nullptr);
   xTaskCreate(sampling_task, "simulated_sampling", 4096, nullptr, 4, nullptr);
