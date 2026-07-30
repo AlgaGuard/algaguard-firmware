@@ -48,11 +48,27 @@ def test_5_duplicate_success_is_terminal_without_second_install():
     result, _, _, installs = run([("REDEEMED", bundle()), ("REDEEMED", bundle())])
     assert result == "SESSION_ARMED" and len(installs) == 1
 
-def test_6_live_transport_is_unavailable(): assert handoff.live_handoff_is_available() is False
+def test_6_live_transport_is_explicit_and_rejects_any_unapproved_endpoint():
+    assert handoff.live_handoff_is_available() is True
+    for value in (
+        "http://api.algaguard.bosilu.dev",
+        "https://localhost",
+        "https://api.algaguard.bosilu.dev/other",
+        "https://api.algaguard.bosilu.dev?unsafe=1",
+    ):
+        try:
+            handoff.LiveHttpsHandoffTransport(value)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unapproved handoff endpoint accepted")
 
-def test_7_no_serial_or_network_implementation_exists():
+def test_7_live_transport_uses_verified_https_without_third_party_or_socket_bypass():
     text = (ROOT / "tools" / "physical_session_handoff.py").read_text()
+    assert "ssl.create_default_context()" in text
+    assert handoff.APPROVED_LIVE_HOST == "api.algaguard.bosilu.dev"
     assert "import requests" not in text and "import serial" not in text and "import socket" not in text
+    assert "--insecure" not in text and "CERT_NONE" not in text
 
 def test_8_safe_outputs_and_representations_do_not_contain_secret_values():
     value = bundle(); assert "x" * 32 not in repr(value)

@@ -15,9 +15,9 @@ import zlib
 
 from physical_session_handoff import (
     HandoffStart,
+    HandoffRunner,
+    LiveHttpsHandoffTransport,
     RedeemedSession,
-    SyntheticHandoffRunner,
-    live_handoff_is_available,
 )
 
 MAGIC = b"AGS1"
@@ -40,18 +40,18 @@ def _frame(command: int, payload: bytes = b"") -> bytes:
     return header + payload + struct.pack(">I", zlib.crc32(header + payload) & 0xFFFFFFFF)
 
 
-def _install_payload(session_id: str, device_id: str, token: str, expiry_tick: int) -> bytearray:
+def _install_payload(session_id: str, device_id: str, token: str, lifetime_ticks: int) -> bytearray:
     if not UUID.fullmatch(session_id) or not DEVICE.fullmatch(device_id) or not TOKEN.fullmatch(token):
         raise ValueError("session fields do not meet the development control-contract shape")
-    if expiry_tick <= 0:
-        raise ValueError("expiry tick must be positive")
+    if lifetime_ticks <= 0 or lifetime_ticks > 30000:
+        raise ValueError("session lifetime must be within the physical-test bound")
     encoded_session = session_id.encode("ascii")
     encoded_device = device_id.encode("ascii")
     encoded_token = token.encode("ascii")
     return bytearray(
         bytes((len(encoded_session), len(encoded_device)))
         + struct.pack(">H", len(encoded_token))
-        + struct.pack(">Q", expiry_tick)
+        + struct.pack(">Q", lifetime_ticks)
         + encoded_session
         + encoded_device
         + encoded_token
@@ -76,14 +76,29 @@ def _send(port: str, frame: bytes) -> str:
             }
             deadline = time.monotonic() + 2
             reply = ""
+            safe_state = ""
+            expect_safe_state = len(frame) > 5 and frame[5] == QUERY
             while time.monotonic() < deadline:
-                candidate = connection.readline(128).decode("ascii", errors="ignore").strip()
-                if (candidate in acknowledgements or candidate == "OLED_ADDRESS_NONE" or
+                candidate = connection.readline(320).decode("ascii", errors="ignore").strip()
+                if candidate in acknowledgements:
+                    reply = candidate
+                elif (candidate == "OLED_ADDRESS_NONE" or
                         re.fullmatch(r"OLED_ADDRESS_0x[0-7][0-9A-F]", candidate)):
                     reply = candidate
+                elif re.fullmatch(
+                    r"SAFE_SESSION_STATE gate=WIFI_CONNECT_TEST_(?:DISABLED|ARMED|CONSUMED|EXPIRED|CLEARED) "
+                    r"activeSessionPresent=(?:true|false) handoffPresent=(?:true|false) "
+                    r"wifiRuntimeReady=true connectAttemptActive=(?:true|false) "
+                    r"credentialsPresent=(?:true|false) secretsCleared=(?:true|false) persistence=false",
+                    candidate,
+                ):
+                    safe_state = candidate
+                if reply and (not expect_safe_state or safe_state):
                     break
     except Exception as error:  # Never include any session field in an operator error.
         raise RuntimeError(f"serial control failed for the explicit port: {type(error).__name__}") from error
+    if safe_state:
+        return f"{reply}\n{safe_state}"
     return reply if reply else "SESSION_INSTALL_REJECTED"
 
 
@@ -92,7 +107,7 @@ def _install_redeemed_in_memory(port: str, bundle: RedeemedSession, send=_send) 
     session_id = bytes(bundle.session_id).decode("ascii")
     device_id = bytes(bundle.device_id).decode("ascii")
     token = bytes(bundle.session_token).decode("ascii")
-    payload = _install_payload(session_id, device_id, token, bundle.expiry_tick)
+    payload = _install_payload(session_id, device_id, token, bundle.lifetime_ticks)
     try:
         return send(port, _frame(INSTALL, payload))
     finally:
@@ -123,27 +138,37 @@ class _SyntheticTransport:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", help="Explicit COM port; automatic selection is prohibited.")
-    parser.add_argument("--backend-url", help="Explicit synthetic handoff endpoint identifier.")
+    parser.add_argument("--backend-url", help="Explicit verified-HTTPS handoff backend.")
     parser.add_argument("--command", choices=("install", "clear", "query", "query-oled-address", "arm-wifi-test", "handoff-install"), default="install")
     parser.add_argument("--session-id")
     parser.add_argument("--device-id")
     parser.add_argument("--expiry-tick", type=int)
+    parser.add_argument("--lifetime-seconds", type=int)
+    parser.add_argument("--live-development", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
-    if args.command != "handoff-install" or not args.dry_run:
-        if not args.port:
-            parser.error("--port is required for serial execution")
+    if not args.port and not (args.command == "handoff-install" and args.dry_run):
+        parser.error("--port is required for serial execution")
     if args.command == "handoff-install":
-        if not args.dry_run or live_handoff_is_available():
-            parser.error("handoff-install is synthetic dry-run only in this sprint")
-        if args.backend_url != "synthetic://handoff":
-            parser.error("handoff-install requires --backend-url synthetic://handoff in this sprint")
-        runner = SyntheticHandoffRunner(
-            _SyntheticTransport(),
-            lambda bundle: _install_redeemed_in_memory("SYNTHETIC", bundle, lambda _, __: "SESSION_ARMED"),
-            lambda _: None,
-            print,
-        )
+        if args.dry_run == args.live_development:
+            parser.error("choose exactly one of --dry-run or --live-development")
+        if args.dry_run:
+            if args.backend_url != "synthetic://handoff":
+                parser.error("synthetic dry-run requires --backend-url synthetic://handoff")
+            transport = _SyntheticTransport()
+            installer = lambda bundle: _install_redeemed_in_memory(
+                "SYNTHETIC", bundle, lambda _, __: "SESSION_ARMED"
+            )
+            sleeper = lambda _: None
+        else:
+            if args.backend_url != "https://api.algaguard.bosilu.dev":
+                parser.error("live execution requires the approved HTTPS backend")
+            if not args.device_id:
+                parser.error("live execution requires an explicit canonical --device-id")
+            transport = LiveHttpsHandoffTransport(args.backend_url)
+            installer = lambda bundle: _install_redeemed_in_memory(args.port, bundle)
+            sleeper = time.sleep
+        runner = HandoffRunner(transport, installer, sleeper, print)
         result = runner.run(args.device_id or "AG-000001")
         print(result)
         return 0 if result == "SESSION_ARMED" else 1
@@ -157,10 +182,10 @@ def main(argv: list[str] | None = None) -> int:
             payload[index] = 0
         token = ""
     elif args.command == "arm-wifi-test":
-        lifetime = args.expiry_tick if args.expiry_tick is not None else 100
-        if lifetime <= 0 or lifetime > 600:
-            parser.error("arm-wifi-test requires a lifetime from 1 to 600 ticks")
-        frame = _frame(ARM_WIFI_TEST, struct.pack(">Q", lifetime))
+        lifetime_seconds = args.lifetime_seconds if args.lifetime_seconds is not None else 300
+        if lifetime_seconds <= 0 or lifetime_seconds > 600:
+            parser.error("arm-wifi-test requires a lifetime from 1 to 600 seconds")
+        frame = _frame(ARM_WIFI_TEST, struct.pack(">Q", lifetime_seconds * 100))
     else:
         frame = _frame(CLEAR if args.command == "clear" else
                        QUERY_OLED_ADDRESS if args.command == "query-oled-address" else QUERY)

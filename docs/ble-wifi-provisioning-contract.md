@@ -23,9 +23,9 @@ line value or writes it to a file. Its dry run uses only a synthetic fixture.
 
 On BLE `ACCEPTED`, the credential handoff moves once into
 `WifiConnectionRuntime`; the session installer and BLE-side handoff clear. The
-physical profile initializes station mode with `WIFI_STORAGE_RAM`, but retains
-`PHYSICAL_WIFI_CONNECT_EXECUTION_DISABLED`: it does not call `startConnection`
-or `esp_wifi_connect`. OLED, LEDs, and logs use only safe state tokens such as
+physical profile initializes station mode with `WIFI_STORAGE_RAM`; connection
+execution remains disabled at boot and requires the one-shot operator gate
+described below. OLED, LEDs, and logs use only safe state tokens such as
 `SESSION_ARMED`, `WIFI_RUNTIME_READY_NOT_CONNECTED`, and `WIFI_HANDOFF_INSTALLED`.
 
 Micro-Sprint 14C2B is the explicit later activation path: install one volatile
@@ -43,21 +43,25 @@ authorization. The safe states are disabled, armed, consumed, expired, and
 cleared. Production, release, and DS profiles reject physical-test mode.
 
 The operator utility keeps its explicit `--port` requirement and supports
-`--command arm-wifi-test` with no secret input. It does not install a session,
-Wi-Fi credential, or persistent setting. 14C2B2 must explicitly arm this gate
-before the single controlled physical connection; there is no auto-connect.
+`--command arm-wifi-test` with no secret input. The requested lifetime is in
+seconds and is converted to the target's 100 Hz monotonic tick domain; it is
+bounded to ten minutes. It does not install a Wi-Fi credential or persistent
+setting. A controlled test must explicitly arm this gate before the single
+physical connection; there is no auto-connect.
 
-## Synthetic physical-session handoff client flow (14C2B2B2)
+## Development physical-session handoff client flow
 
 `DEVELOPMENT_ONLY_PHYSICAL_SESSION_APPROVAL` is disabled by default and absent
 from release navigation. A mobile user enters only a short `userCode`; its
 existing RAM-only claim session is sent once in the authenticated approval body
-and is then cleared. The PC utility retains the high-entropy `deviceCode` only
-in process memory, prints only the user code and expiry, then polls/redeems.
+and then moves into BLE provisioning. The PC utility retains the high-entropy
+`deviceCode` only in process memory, prints only the user code and expiry, then
+polls/redeems over the exact verified-HTTPS development endpoint.
 The redeemed session bundle passes directly to the existing installer seam in
-memory. This implementation is synthetic dry-run only: it contains no live
-HTTP or COM-port transport, no file, argument, or environment serialization,
-and no physical provisioning action.
+memory and then to the explicit COM port. It rejects HTTP, redirects, alternate
+hosts, automatic port selection, and token arguments. Synthetic dry-run remains
+available without network or serial activity. Live execution requires the
+separate `--live-development` opt-in.
 
 This contract defines the request and deterministic state machine plus the
 compile-only ESP-IDF GATT boundary. Protocol version `1` uses the
@@ -196,7 +200,9 @@ contract's 32–96 URL-safe-character shape. Parser scratch buffers are cleared
 on success and every failure path.
 
 An injected development session supplies the expected session ID, device ID,
-secret session token, and expiry tick. These values are held only by the
+secret session token, and bounded remaining lifetime. The COM control boundary
+converts that lifetime into an absolute ESP monotonic expiry tick and caps it
+at five minutes. These values are held only by the
 existing bounded provisioning state machine and will later be populated from
 the secure-bootstrap session source. The parser adapts directly into the
 existing `BleWifiProvisioningRequest`; it does not create a second validation

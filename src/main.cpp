@@ -239,40 +239,56 @@ esp_err_t configure_oled_i2c() {
   return ESP_OK;
 }
 
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+algaguard::PhysicalTestState current_physical_test_state(
+    algaguard::BleAdvertisingRuntimeStatus advertising) {
+  auto state =
+      advertising.stage == algaguard::BleAdvertisingStage::kAdvStartOk
+          ? algaguard::PhysicalTestState::kBleAdvertisingActive
+          : advertising.stage == algaguard::BleAdvertisingStage::kAdvStartFailed
+                ? algaguard::PhysicalTestState::kBleAdvertisingFailed
+                : algaguard::PhysicalTestState::kBleAdvertisingInitializing;
+  if (advertising.stage == algaguard::BleAdvertisingStage::kAdvStartFailed) return state;
+  switch (wifi_connection_runtime.state()) {
+    case algaguard::WifiConnectionState::kConnecting:
+    case algaguard::WifiConnectionState::kRetryWait:
+      return algaguard::PhysicalTestState::kWifiConnecting;
+    case algaguard::WifiConnectionState::kConnected:
+      return algaguard::PhysicalTestState::kWifiConnected;
+    case algaguard::WifiConnectionState::kAuthFailed:
+      return algaguard::PhysicalTestState::kAuthFailed;
+    case algaguard::WifiConnectionState::kNetworkNotFound:
+      return algaguard::PhysicalTestState::kNetworkNotFound;
+    case algaguard::WifiConnectionState::kTimedOut:
+      return algaguard::PhysicalTestState::kTimedOut;
+    case algaguard::WifiConnectionState::kCancelled:
+      return algaguard::PhysicalTestState::kCancelled;
+    default:
+      break;
+  }
+  const auto gate = algaguard::physical_wifi_connect_gate.state();
+  if (gate == algaguard::PhysicalWifiConnectGateState::kArmed)
+    return algaguard::PhysicalTestState::kConnectTestArmed;
+  if (gate == algaguard::PhysicalWifiConnectGateState::kConsumed)
+    return algaguard::PhysicalTestState::kConnectTestConsumed;
+  if (gate == algaguard::PhysicalWifiConnectGateState::kExpired)
+    return algaguard::PhysicalTestState::kConnectTestExpired;
+  if (physical_runtime_bridge.handoffInstalled())
+    return algaguard::PhysicalTestState::kWifiHandoffReady;
+  if (physical_session_installer.state() == algaguard::PhysicalSessionInstallerState::kArmed)
+    return algaguard::PhysicalTestState::kSessionArmed;
+  if (physical_session_installer.state() == algaguard::PhysicalSessionInstallerState::kRejected)
+    return algaguard::PhysicalTestState::kSessionInstallRejected;
+  return state;
+}
+#endif
+
 void apply_leds(algaguard::StartupState state,
                 bool remote_indicator = false) {
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
   if (state != algaguard::StartupState::kFault) {
     const auto advertising = ble_provisioning_transport.advertisingRuntimeStatus();
-    algaguard::PhysicalTestState physical_state =
-        advertising.stage == algaguard::BleAdvertisingStage::kAdvStartOk
-            ? algaguard::PhysicalTestState::kBleAdvertisingActive
-            : advertising.stage == algaguard::BleAdvertisingStage::kAdvStartFailed
-                  ? algaguard::PhysicalTestState::kBleAdvertisingFailed
-                  : algaguard::PhysicalTestState::kBleAdvertisingInitializing;
-    switch (wifi_connection_runtime.state()) {
-      case algaguard::WifiConnectionState::kConnecting:
-      case algaguard::WifiConnectionState::kRetryWait:
-        physical_state = algaguard::PhysicalTestState::kWifiConnecting;
-        break;
-      case algaguard::WifiConnectionState::kConnected:
-        physical_state = algaguard::PhysicalTestState::kWifiConnected;
-        break;
-      case algaguard::WifiConnectionState::kAuthFailed:
-        physical_state = algaguard::PhysicalTestState::kAuthFailed;
-        break;
-      case algaguard::WifiConnectionState::kNetworkNotFound:
-        physical_state = algaguard::PhysicalTestState::kNetworkNotFound;
-        break;
-      case algaguard::WifiConnectionState::kTimedOut:
-        physical_state = algaguard::PhysicalTestState::kTimedOut;
-        break;
-      case algaguard::WifiConnectionState::kCancelled:
-        physical_state = algaguard::PhysicalTestState::kCancelled;
-        break;
-      default:
-        break;
-    }
+    const auto physical_state = current_physical_test_state(advertising);
     const auto pattern = algaguard::physical_test_led_pattern(physical_state);
     const bool illuminated = !pattern.blink || (xTaskGetTickCount() / 10U) % 2U == 0;
     gpio_set_level(static_cast<gpio_num_t>(algaguard::hardware::kLedRed),
@@ -441,41 +457,19 @@ algaguard::StartupStateMachine startup{services};
 
 void render_startup_state() {
   static auto last_state = static_cast<algaguard::StartupState>(255);
-  static auto last_advertising_stage = static_cast<algaguard::BleAdvertisingStage>(255);
-  static std::int32_t last_advertising_code{};
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+  static auto last_physical_state = static_cast<algaguard::PhysicalTestState>(255);
+#endif
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
   const auto advertising = ble_provisioning_transport.advertisingRuntimeStatus();
-  if (last_state == startup.state() && last_advertising_stage == advertising.stage &&
-      last_advertising_code == advertising.returnCode)
-    return;
-  last_advertising_stage = advertising.stage;
-  last_advertising_code = advertising.returnCode;
+  const auto physical_state = current_physical_test_state(advertising);
+  if (last_state == startup.state() && last_physical_state == physical_state) return;
+  last_physical_state = physical_state;
 #else
   if (last_state == startup.state()) return;
 #endif
   last_state = startup.state();
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
-  auto physical_state =
-      advertising.stage == algaguard::BleAdvertisingStage::kAdvStartOk
-          ? algaguard::PhysicalTestState::kBleAdvertisingActive
-          : advertising.stage == algaguard::BleAdvertisingStage::kAdvStartFailed
-                ? algaguard::PhysicalTestState::kBleAdvertisingFailed
-                : algaguard::PhysicalTestState::kBleAdvertisingInitializing;
-  if (advertising.stage != algaguard::BleAdvertisingStage::kAdvStartFailed) {
-    const auto gateState = algaguard::physical_wifi_connect_gate.state();
-    if (gateState == algaguard::PhysicalWifiConnectGateState::kArmed)
-      physical_state = algaguard::PhysicalTestState::kConnectTestArmed;
-    else if (gateState == algaguard::PhysicalWifiConnectGateState::kConsumed)
-      physical_state = algaguard::PhysicalTestState::kConnectTestConsumed;
-    else if (gateState == algaguard::PhysicalWifiConnectGateState::kExpired)
-      physical_state = algaguard::PhysicalTestState::kConnectTestExpired;
-    else if (physical_runtime_bridge.handoffInstalled())
-      physical_state = algaguard::PhysicalTestState::kWifiHandoffReady;
-    else if (physical_session_installer.state() == algaguard::PhysicalSessionInstallerState::kArmed)
-      physical_state = algaguard::PhysicalTestState::kSessionArmed;
-    else if (physical_session_installer.state() == algaguard::PhysicalSessionInstallerState::kRejected)
-      physical_state = algaguard::PhysicalTestState::kSessionInstallRejected;
-  }
   auto visible_screen = algaguard::physical_test_screen(physical_state, advertising.returnCode);
 #else
   auto visible_screen = algaguard::state_screen(startup.state(), startup.reason());
@@ -510,6 +504,9 @@ void poll_physical_session_console() {
   std::array<std::uint8_t, 64> received{};
   const auto count = uart_read_bytes(UART_NUM_0, received.data(), received.size(), 0);
   if (count <= 0) return;
+  const bool safe_state_query =
+      count > 5 && received[5] == static_cast<std::uint8_t>(
+                                     algaguard::PhysicalSessionControlCommand::kQuerySafeSessionState);
   const auto acknowledgement = physical_session_protocol.ingest(
       ble_provisioning_transport, physical_session_installer, received.data(),
       static_cast<std::size_t>(count), static_cast<std::uint64_t>(xTaskGetTickCount()),
@@ -536,6 +533,23 @@ void poll_physical_session_console() {
     const auto connectionActive =
         wifi_connection_runtime.state() == algaguard::WifiConnectionState::kConnecting ||
         wifi_connection_runtime.state() == algaguard::WifiConnectionState::kRetryWait;
+    if (safe_state_query) {
+      char state[260]{};
+      const auto written = std::snprintf(
+          state, sizeof(state),
+          "SAFE_SESSION_STATE gate=%.*s activeSessionPresent=%s handoffPresent=%s "
+          "wifiRuntimeReady=true connectAttemptActive=%s credentialsPresent=%s "
+          "secretsCleared=%s persistence=false\n",
+          static_cast<int>(gate.size()), gate.data(),
+          physical_session_installer.armed() ? "true" : "false",
+          physical_runtime_bridge.handoffInstalled() ? "true" : "false",
+          connectionActive ? "true" : "false",
+          wifi_connection_runtime.credentialsPresent() ? "true" : "false",
+          physical_session_installer.secretsCleared() && wifi_connection_runtime.secretsCleared()
+              ? "true" : "false");
+      if (written > 0 && static_cast<std::size_t>(written) < sizeof(state))
+        (void)uart_write_bytes(UART_NUM_0, state, static_cast<std::size_t>(written));
+    }
     ESP_LOGI(kTag, "%.*s gate=%.*s activeSessionPresent=%s handoffPresent=%s wifiRuntimeReady=true "
              "connectAttemptActive=%s secretsCleared=%s", static_cast<int>(code.size()), code.data(),
              static_cast<int>(gate.size()), gate.data(),
@@ -551,6 +565,7 @@ void poll_physical_session_console() {
 void startup_task(void*) {
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
   auto last_advertising_status = ble_provisioning_transport.advertisingRuntimeStatus();
+  auto last_wifi_state = wifi_connection_runtime.state();
 #endif
   while (true) {
     startup.tick();
@@ -565,6 +580,21 @@ void startup_task(void*) {
       physical_session_installer.markProcessingStarted();
       ESP_LOGI(kTag, "WIFI_HANDOFF_INSTALLED connectExecutionEnabled=%s",
                physical_runtime_bridge.connectExecutionEnabled() ? "true" : "false");
+    }
+    const auto wifi_state = wifi_connection_runtime.state();
+    if (wifi_state != last_wifi_state) {
+      if (wifi_state == algaguard::WifiConnectionState::kConnecting)
+        ESP_LOGI(kTag, "WIFI_CONNECTING credentialsPresent=true persistence=false");
+      else if (wifi_state == algaguard::WifiConnectionState::kConnected)
+        ESP_LOGI(kTag, "GOT_IP WIFI_CONNECTED credentialsPresent=false secretsCleared=true "
+                       "persistence=false");
+      else
+        ESP_LOGI(kTag, "WIFI_SAFE_STATE state=%u credentialsPresent=%s secretsCleared=%s "
+                       "persistence=false",
+                 static_cast<unsigned>(wifi_state),
+                 wifi_connection_runtime.credentialsPresent() ? "true" : "false",
+                 wifi_connection_runtime.secretsCleared() ? "true" : "false");
+      last_wifi_state = wifi_state;
     }
     const auto advertising = ble_provisioning_transport.advertisingRuntimeStatus();
     if (advertising.stage != last_advertising_status.stage ||

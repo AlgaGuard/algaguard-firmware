@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string_view>
 #include <utility>
 
@@ -27,7 +28,15 @@ inline constexpr std::size_t kPhysicalSessionMaxPayloadBytes = 640;
 inline constexpr std::size_t kPhysicalSessionMaxFrameBytes = 4 + 1 + 1 + 2 +
                                                               kPhysicalSessionMaxPayloadBytes + 4;
 inline constexpr std::uint64_t kPhysicalSessionFrameTimeoutTicks = 100;
-inline constexpr std::uint64_t kPhysicalWifiGateMaxLifetimeTicks = 600;
+#if defined(ESP_PLATFORM)
+inline constexpr std::uint64_t kPhysicalTicksPerSecond = CONFIG_FREERTOS_HZ;
+#else
+inline constexpr std::uint64_t kPhysicalTicksPerSecond = 100;
+#endif
+inline constexpr std::uint64_t kPhysicalSessionMaxLifetimeTicks =
+    5 * 60 * kPhysicalTicksPerSecond;
+inline constexpr std::uint64_t kPhysicalWifiGateMaxLifetimeTicks =
+    10 * 60 * kPhysicalTicksPerSecond;
 
 inline std::uint64_t physical_gate_monotonic_tick() noexcept {
 #if defined(ESP_PLATFORM)
@@ -315,8 +324,10 @@ class PhysicalSessionControlProtocol {
       return PhysicalSessionControlAck::kOledAddressQuery;
     }
     if (command == PhysicalSessionControlCommand::kArmOneWifiConnectionTest && read16(6) == 8) {
-      const bool activityPresent = installer.armed() || installer.processingStarted() ||
-                                   handoffPresent || connectionAttemptActive;
+      // An armed session is the required precursor for the first gate arm.
+      // Processing, a pending handoff, or a connection attempt still blocks it.
+      const bool activityPresent = installer.processingStarted() || handoffPresent ||
+                                   connectionAttemptActive;
       const auto armed = physical_wifi_connect_gate.arm(now, read64(8), activityPresent,
                                                          connectionAttemptActive);
       clear();
@@ -343,11 +354,15 @@ class PhysicalSessionControlProtocol {
     const std::size_t sessionOffset = payload + 12;
     const std::size_t deviceOffset = sessionOffset + sessionLength;
     const std::size_t tokenOffset = deviceOffset + deviceLength;
+    const auto lifetimeTicks = read64(payload + 4);
+    if (lifetimeTicks == 0 || lifetimeTicks > kPhysicalSessionMaxLifetimeTicks ||
+        now > std::numeric_limits<std::uint64_t>::max() - lifetimeTicks)
+      return reject(installer);
     const bool installed = installer.install(
         transport, std::string_view{reinterpret_cast<const char*>(buffer_.data() + sessionOffset), sessionLength},
         std::string_view{reinterpret_cast<const char*>(buffer_.data() + deviceOffset), deviceLength},
         std::string_view{reinterpret_cast<const char*>(buffer_.data() + tokenOffset), tokenLength},
-        read64(payload + 4), now);
+        now + lifetimeTicks, now);
     clear();
     return installed ? PhysicalSessionControlAck::kArmed : PhysicalSessionControlAck::kRejected;
   }

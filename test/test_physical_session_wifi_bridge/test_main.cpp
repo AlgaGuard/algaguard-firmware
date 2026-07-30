@@ -38,11 +38,13 @@ class FakeTransport {
   bool installDevelopmentSession(std::string_view sessionId, std::string_view deviceId,
                                  std::string_view token, std::uint64_t expiry) {
     ++installCalls;
+    installedExpiry = expiry;
     installed = sessionId == kSessionId && deviceId == kDeviceId && token.size() >= 32 && expiry > 0;
     return installed;
   }
   algaguard::BleWifiCredentialHandoff takeAcceptedWifiCredentials() { return std::move(handoff); }
   unsigned installCalls{};
+  std::uint64_t installedExpiry{};
   bool installed{};
   algaguard::BleWifiCredentialHandoff handoff;
 };
@@ -120,6 +122,7 @@ void test_209_valid_frame_arms_one_session_and_clears_receive_buffer() {
   FakeTransport transport; algaguard::PhysicalTestSessionInstaller installer; algaguard::PhysicalSessionControlProtocol protocol;
   std::size_t length{}; auto bytes = frame(length);
   TEST_ASSERT_EQUAL_INT(static_cast<int>(algaguard::PhysicalSessionControlAck::kArmed), static_cast<int>(protocol.ingest(transport, installer, bytes.data(), length, 10)));
+  TEST_ASSERT_EQUAL_UINT64(210, transport.installedExpiry);
   TEST_ASSERT_TRUE(installer.armed()); TEST_ASSERT_TRUE(installer.secretsCleared()); TEST_ASSERT_TRUE(protocol.secretsCleared());
 }
 
@@ -130,7 +133,7 @@ void test_210_bad_duplicate_expired_wrong_device_and_late_frames_are_rejected() 
   TEST_ASSERT_TRUE(installer.armed());
   algaguard::PhysicalTestSessionInstaller wrong; algaguard::PhysicalSessionControlProtocol wrongProtocol; auto badDevice = frame(length, "AG-000002");
   TEST_ASSERT_EQUAL_INT(static_cast<int>(algaguard::PhysicalSessionControlAck::kRejected), static_cast<int>(wrongProtocol.ingest(transport, wrong, badDevice.data(), length, 10)));
-  algaguard::PhysicalTestSessionInstaller expired; algaguard::PhysicalSessionControlProtocol expiredProtocol; auto old = frame(length, kDeviceId, 10);
+  algaguard::PhysicalTestSessionInstaller expired; algaguard::PhysicalSessionControlProtocol expiredProtocol; auto old = frame(length, kDeviceId, 0);
   TEST_ASSERT_EQUAL_INT(static_cast<int>(algaguard::PhysicalSessionControlAck::kRejected), static_cast<int>(expiredProtocol.ingest(transport, expired, old.data(), length, 10)));
   installer.markProcessingStarted();
   TEST_ASSERT_EQUAL_INT(static_cast<int>(algaguard::PhysicalSessionControlAck::kDisabled), static_cast<int>(protocol.ingest(transport, installer, valid.data(), length, 12)));
