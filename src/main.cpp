@@ -4,6 +4,7 @@
 #include "algaguard/credentials.hpp"
 #include "algaguard/display.hpp"
 #include "algaguard/hardware.hpp"
+#include "algaguard/local_demo.hpp"
 #include "algaguard/physical_test_harness.hpp"
 #include "algaguard/physical_provisioning_runtime_bridge.hpp"
 #include "algaguard/startup.hpp"
@@ -44,6 +45,13 @@ algaguard::DebouncedButton up_button;
 algaguard::DebouncedButton down_button;
 algaguard::DebouncedButton select_button;
 algaguard::DebouncedButton back_button;
+#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
+algaguard::LocalDemoGenerator local_demo_generator;
+algaguard::LocalDemoMenu local_demo_menu;
+algaguard::LocalDemoReading local_demo_reading{};
+portMUX_TYPE local_demo_lock = portMUX_INITIALIZER_UNLOCKED;
+std::uint32_t local_demo_revision{};
+#endif
 algaguard::EspIdfBleProvisioningTransport ble_provisioning_transport;
 algaguard::EspIdfWifiConnectionAdapter wifi_connection_adapter;
 algaguard::WifiConnectionRuntime wifi_connection_runtime{wifi_connection_adapter};
@@ -344,6 +352,11 @@ class EspFoundationServices final : public algaguard::StartupServices {
     ble_provisioning_transport.recordAdvertisingStage(
         algaguard::BleAdvertisingStage::kNvsReady, result);
 #endif
+#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
+    initialize_physical_session_console();
+    ESP_LOGI(kTag, "LOCAL_DEMO_RUNTIME_READY wifi=NOT_CONFIGURED cloud=OFFLINE persistence=false");
+    return {algaguard::OperationStatus::kSuccess};
+#else
     wifi_connection_adapter.setRuntime(&wifi_connection_runtime);
     if (!wifi_connection_adapter.init() || !wifi_connection_adapter.start())
       return {algaguard::OperationStatus::kRecoverableFailure,
@@ -356,6 +369,7 @@ class EspFoundationServices final : public algaguard::StartupServices {
     ESP_LOGI(kTag, "%s", algaguard::physical_session_state_code(physical_session_installer.state()).data());
 #endif
     return {algaguard::OperationStatus::kSuccess};
+#endif
   }
 
   algaguard::StartupResult display_init() override {
@@ -459,6 +473,26 @@ void render_startup_state() {
   static auto last_state = static_cast<algaguard::StartupState>(255);
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
   static auto last_physical_state = static_cast<algaguard::PhysicalTestState>(255);
+#endif
+#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
+  static std::uint32_t last_demo_revision = UINT32_MAX;
+  if (startup.state() >= algaguard::StartupState::kInputInit) {
+    algaguard::LocalDemoReading reading{};
+    algaguard::LocalDemoPage page{};
+    std::uint32_t revision{};
+    portENTER_CRITICAL(&local_demo_lock);
+    reading = local_demo_reading;
+    page = local_demo_menu.page();
+    revision = local_demo_revision;
+    portEXIT_CRITICAL(&local_demo_lock);
+    if (revision == last_demo_revision) return;
+    last_demo_revision = revision;
+    const bool advertising = ble_provisioning_transport.advertisingRuntimeStatus().advertisingActive;
+    const auto visible_screen = algaguard::local_demo_screen(page, reading, advertising);
+    if (render_screen(visible_screen) != ESP_OK)
+      ESP_LOGE(kTag, "display_update_failed mode=LOCAL_DEMO");
+    return;
+  }
 #endif
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
   const auto advertising = ble_provisioning_transport.advertisingRuntimeStatus();
@@ -628,6 +662,19 @@ void startup_task(void*) {
 void sampling_task(void*) {
   std::uint64_t sequence = 1;
   while (true) {
+#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
+    if (startup.state() < algaguard::StartupState::kInputInit) {
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+    const auto reading = local_demo_generator.next(sequence++);
+    portENTER_CRITICAL(&local_demo_lock);
+    local_demo_reading = reading;
+    ++local_demo_revision;
+    portEXIT_CRITICAL(&local_demo_lock);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    continue;
+#else
     if (startup.state() != algaguard::StartupState::kOnline) {
       vTaskDelay(pdMS_TO_TICKS(250));
       continue;
@@ -644,6 +691,7 @@ void sampling_task(void*) {
                static_cast<unsigned>(qos1_batch.size()));
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
+#endif
   }
 }
 
@@ -659,24 +707,58 @@ void input_task(void*) {
             gpio_get_level(
                 static_cast<gpio_num_t>(algaguard::hardware::kButtonUp)) == 0,
             now) == algaguard::ButtonEvent::kShortPress)
+#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
+      {
+        portENTER_CRITICAL(&local_demo_lock);
+        local_demo_menu.previous();
+        ++local_demo_revision;
+        portEXIT_CRITICAL(&local_demo_lock);
+      }
+#else
       menu.up();
+#endif
     if (down_button.update(
             gpio_get_level(
                 static_cast<gpio_num_t>(algaguard::hardware::kButtonDown)) == 0,
             now) == algaguard::ButtonEvent::kShortPress)
+#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
+      {
+        portENTER_CRITICAL(&local_demo_lock);
+        local_demo_menu.next();
+        ++local_demo_revision;
+        portEXIT_CRITICAL(&local_demo_lock);
+      }
+#else
       menu.down();
+#endif
     if (select_button.update(
             gpio_get_level(static_cast<gpio_num_t>(
                 algaguard::hardware::kButtonSelect)) == 0,
             now) == algaguard::ButtonEvent::kShortPress) {
+#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
+      portENTER_CRITICAL(&local_demo_lock);
+      local_demo_menu.select();
+      ++local_demo_revision;
+      portEXIT_CRITICAL(&local_demo_lock);
+#else
       menu.select();
       if (menu.reset_confirmed()) startup.confirmed_reset(true);
+#endif
     }
     if (back_button.update(
             gpio_get_level(
                 static_cast<gpio_num_t>(algaguard::hardware::kButtonBack)) == 0,
             now) == algaguard::ButtonEvent::kShortPress)
+#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
+      {
+        portENTER_CRITICAL(&local_demo_lock);
+        local_demo_menu.home();
+        ++local_demo_revision;
+        portEXIT_CRITICAL(&local_demo_lock);
+      }
+#else
       menu.back();
+#endif
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 }

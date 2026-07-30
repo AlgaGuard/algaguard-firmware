@@ -18,6 +18,14 @@ The prototype is USB powered only. Battery ADC, charging, 3S power-path logic, a
 ```sh
 pio test -e native
 pio run -e esp32-s3-devkitc-1
+pio run -e esp32-s3-dev-local-oled-demo
 ```
+
+`esp32-s3-dev-local-oled-demo` is a development-only, USB-powered presentation
+profile. It generates bounded local sample values for the OLED once per second,
+labels them `LOCAL SIMULATION`, keeps Wi-Fi and cloud access off, and preserves
+BLE setup advertising. It is disabled by default and rejected by production,
+release, and DS-identity profiles. These local readings are not cloud telemetry
+and are not scientifically validated cultivation ranges.
 
 No real board has been flashed or electrically validated by this repository.
