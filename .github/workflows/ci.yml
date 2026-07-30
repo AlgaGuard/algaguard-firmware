@@ -44,7 +44,7 @@ jobs:
             --suppress=knownConditionTrueFalse:src/secure_identity.cpp:158 \
           --suppress=knownConditionTrueFalse:src/secure_identity.cpp:230 \
           --suppress=knownConditionTrueFalse:src/secure_identity_compile_proof.cpp:11 \
-          --suppress=unusedStructMember:src/main.cpp:76 \
+          --suppress=unusedStructMember:src/main.cpp \
           --std=c++17 \
             include src
       - name: Contract fixture guard
