@@ -24,6 +24,10 @@ class BleProvisioningGattController {
   BleProvisioningGattController() { setStatus(BleProvisioningSafeStatus::kReady,
                                               BleProvisioningSafeReason::kOk, false); }
 
+  void setQrAuthorizer(QrBleSessionAuthorizer* authorizer) {
+    validation_.setQrAuthorizer(authorizer);
+  }
+
   BleProvisioningGattControllerResult onConnected(std::uint16_t connectionId) {
     if (shutdown_) return reject(BleProvisioningSafeReason::kInvalidTransition, true);
     if (connected_) return reject(BleProvisioningSafeReason::kInvalidTransition, false);
@@ -91,7 +95,7 @@ class BleProvisioningGattController {
       auto completed = transport_.takeCompletedPayload();
       if (!completed.available())
         return reject(BleProvisioningSafeReason::kInvalidTransition, false);
-      if (validation_.hasSession()) {
+      if (validation_.hasSession() || validation_.qrAuthorizerAvailable()) {
         const auto validated = validation_.consume(std::move(completed), nowTick);
         setStatus(validated.safeStatus, validated.safeReason, true);
         return {validated.accepted, false, validated.secretsCleared, validated.safeStatus,

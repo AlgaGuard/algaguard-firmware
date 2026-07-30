@@ -20,13 +20,34 @@ std::string payload(std::string_view deviceId = kDeviceId, std::string_view toke
          std::string{ssid} + "\",\"password\":\"" + std::string{password} + "\"}";
 }
 
+std::string qrPayload() {
+  return std::string{"{\"schema\":\"urn:algaguard:schema:onboarding:ble-provisioning-request:v2\","
+                     "\"schemaVersion\":\"2.0.0\",\"sessionId\":\""} +
+         kSessionId + "\",\"deviceId\":\"" + kDeviceId +
+         "\",\"sessionToken\":\"" + kSessionToken +
+         "\",\"bindingGrant\":\"" + std::string(194, 'g') +
+         "\",\"ssid\":\"AlgaGuard-Lab\",\"password\":\"" + kPassword + "\"}";
+}
+
+class QrAuthorizer final : public algaguard::QrBleSessionAuthorizer {
+ public:
+  int calls{};
+  std::optional<std::uint64_t> authorize(
+      const algaguard::BleWifiProvisioningRequest& request,
+      std::uint64_t) override {
+    ++calls;
+    return request.bindingGrant().size() == 194 ? std::optional<std::uint64_t>{200}
+                                                : std::nullopt;
+  }
+};
+
 void send(algaguard::BleProvisioningGattController& controller, const std::string& body,
           std::uint32_t messageId, std::uint64_t tick) {
   const auto split = body.size() > 180 ? 180 : body.size();
-  const auto frameCount = split == body.size() ? 1U : 2U;
+  const auto frameCount = static_cast<std::uint16_t>((body.size() + split - 1U) / split);
   for (std::uint16_t index = 0; index < frameCount; ++index) {
-    const auto offset = index == 0 ? 0U : split;
-    const auto size = index == 0 ? split : body.size() - split;
+    const auto offset = static_cast<std::size_t>(index) * split;
+    const auto size = std::min(split, body.size() - offset);
     algaguard::BleProvisioningFrame frame;
     frame.messageId = messageId;
     frame.fragmentIndex = index;
@@ -151,6 +172,24 @@ void test_157_terminal_paths_zeroize_secret_buffers_and_safe_status() {
   TEST_ASSERT_FALSE(contains(status, kPassword));
 }
 
+void test_158_qr_bound_v2_authorizes_one_session_without_com16() {
+  const auto body = qrPayload();
+  algaguard::BleProvisioningPayloadParser parser;
+  const auto parsed = parser.parse(
+      reinterpret_cast<const std::uint8_t*>(body.data()), body.size());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(algaguard::BleWifiProvisioningReason::OK),
+                        static_cast<int>(parsed.safeReason));
+  TEST_ASSERT_TRUE(parsed.accepted());
+  algaguard::BleProvisioningGattController controller;
+  QrAuthorizer authorizer;
+  controller.setQrAuthorizer(&authorizer);
+  TEST_ASSERT_TRUE(controller.onConnected(7).accepted);
+  send(controller, body, 114, 10);
+  TEST_ASSERT_EQUAL(1, authorizer.calls);
+  TEST_ASSERT_TRUE(contains(controller.readSafeStatus().view(), "ACCEPTED"));
+  TEST_ASSERT_TRUE(controller.takeAcceptedWifiCredentials().available());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_150_valid_canonical_payload_reaches_accepted);
@@ -161,5 +200,6 @@ int main(int, char**) {
   RUN_TEST(test_155_accepted_request_creates_one_wifi_handoff_without_session_token);
   RUN_TEST(test_156_replay_cannot_overwrite_pending_accepted_credentials);
   RUN_TEST(test_157_terminal_paths_zeroize_secret_buffers_and_safe_status);
+  RUN_TEST(test_158_qr_bound_v2_authorizes_one_session_without_com16);
   return UNITY_END();
 }

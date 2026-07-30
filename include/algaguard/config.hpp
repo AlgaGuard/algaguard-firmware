@@ -55,7 +55,7 @@ inline constexpr FirmwareConfig kDevelopmentConfig{
     FirmwareEnvironment::kDevelopment,
     "development",
     "AG-000001",
-    "https://dev.algaguard.bosilu.dev/api/v1/device-credentials/bootstrap",
+    "https://api.algaguard.bosilu.dev/services/device/device-credential-bootstrap",
     "mqtt-dev.algaguard.bosilu.dev",
     8883,
     "https://dev.algaguard.bosilu.dev/api/v1",

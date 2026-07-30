@@ -31,3 +31,10 @@ pio run -e esp32-s3-dev-local-oled-demo -t upload --upload-port COM16
 ```
 
 Do not use a full-chip erase or connect a battery, 3S supply, or MicroSD card.
+
+The separate `esp32-s3-dev-qr-onboarding-demo` profile preserves these local
+simulation pages and BLE advertising while adding full-screen `Scan to add`, QR
+ready, and QR-expired pages. A QR invitation is public, short-lived, and
+one-time; it contains no Wi-Fi, session, account, key, certificate, or cloud
+secret. This combined profile may initialize the Wi-Fi runtime but cannot start
+a connection until a signed QR-bound BLE request consumes the one-shot gate.

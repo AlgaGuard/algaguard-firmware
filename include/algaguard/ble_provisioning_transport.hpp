@@ -96,6 +96,9 @@ class EspIdfBleProvisioningTransport final : public BleProvisioningTransport {
                                  std::string_view sessionToken, std::uint64_t expiryTick) {
     return installDevelopmentProvisioningSession(sessionId, deviceId, sessionToken, expiryTick);
   }
+  void setQrSessionAuthorizer(QrBleSessionAuthorizer* authorizer) {
+    controller_.setQrAuthorizer(authorizer);
+  }
   BleWifiCredentialHandoff takeAcceptedWifiCredentials();
   void recordAdvertisingStage(BleAdvertisingStage stage, std::int32_t returnCode = 0);
   BleAdvertisingRuntimeStatus advertisingRuntimeStatus() const { return advertisingStatus_; }

@@ -372,6 +372,31 @@ teardown, move-from cleanup, and destruction. Diagnostics contain only state
 and reason codes. This is memory-lifetime hygiene, not hardware-backed secret
 protection; any future BLE transport must also clear its own receive buffers.
 
+## Development QR onboarding profile
+
+`esp32-s3-dev-qr-onboarding-demo` adds the guarded
+`ALGAGUARD_ENABLE_QR_ONBOARDING` path without enabling the legacy physical
+handoff. The OLED renders a fixed 49-character `ag://q/` invitation encoded as
+31 compact binary bytes. It carries only a version, bounded device reference,
+128-bit ESP-IDF RNG nonce, monotonic issue/expiry ticks, capability version, and
+CRC16. The nonce is RAM-only, rotates at expiry, and is zeroized after a signed
+binding grant is accepted.
+
+The QR path uses BLE provisioning request v2. It retains the canonical service
+and characteristic UUIDs and adds exactly one backend-signed binding grant to
+the existing request fields. Firmware verifies that grant against the pinned
+development public key before it arms the one-shot Wi-Fi gate. One accepted
+request may therefore authorize one connection; boot, BLE advertising, QR
+generation, and Wi-Fi station startup cannot connect automatically.
+
+After `GOT_IP`, the QR profile performs one trusted-HTTPS credential bootstrap.
+It generates an RSA-3072 key locally, submits only the public CSR, verifies the
+returned device binding, and commits the certificate through the existing
+development credential store. Failure destroys the staged key and leaves the
+device unprovisioned. No private key, nonce, onboarding token, SSID, or password
+is displayed or logged. Production, release, and DS profiles reject this
+feature at compile time.
+
 ## Non-goals
 
 This foundation does not implement pairing, bonding, Wi-Fi scanning or

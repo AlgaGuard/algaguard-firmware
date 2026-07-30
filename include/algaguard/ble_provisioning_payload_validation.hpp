@@ -15,6 +15,9 @@ namespace algaguard {
 inline constexpr std::string_view kBleProvisioningPayloadSchema =
     "urn:algaguard:schema:onboarding:ble-provisioning-request:v1";
 inline constexpr std::string_view kBleProvisioningPayloadSchemaVersion = "1.0.0";
+inline constexpr std::string_view kQrBleProvisioningPayloadSchema =
+    "urn:algaguard:schema:onboarding:ble-provisioning-request:v2";
+inline constexpr std::string_view kQrBleProvisioningPayloadSchemaVersion = "2.0.0";
 
 struct BleProvisioningPayloadParseResult {
   BleWifiProvisioningReason safeReason{BleWifiProvisioningReason::MALFORMED_PAYLOAD};
@@ -32,7 +35,9 @@ class BleProvisioningPayloadParser {
     length_ = length;
     index_ = 0;
     BleWifiProvisioningRequestBuilder builder;
-    std::uint8_t fields{};
+    std::uint16_t fields{};
+    protocolVersion_ = 0;
+    schemaVersion_ = 0;
     skipWhitespace();
     if (!consume('{')) return failure(BleWifiProvisioningReason::MALFORMED_PAYLOAD);
     skipWhitespace();
@@ -59,8 +64,11 @@ class BleProvisioningPayloadParser {
       skipWhitespace();
     }
     skipWhitespace();
-    if (index_ != length_ || (fields & kRequiredFields) != kRequiredFields)
+    const auto required = protocolVersion_ == 2 ? kQrRequiredFields : kRequiredFields;
+    if (index_ != length_ || protocolVersion_ == 0 ||
+        schemaVersion_ != protocolVersion_ || (fields & required) != required)
       return failure(BleWifiProvisioningReason::MALFORMED_PAYLOAD);
+    builder.protocolVersion(protocolVersion_);
     auto request = builder.build();
     const auto structural = request.structuralReasonForAdapter();
     if (structural != BleWifiProvisioningReason::OK) return failure(structural);
@@ -72,31 +80,42 @@ class BleProvisioningPayloadParser {
   void clear() noexcept { clearScratch(); }
 
  private:
-  static constexpr std::uint8_t kSchema = 0x01;
-  static constexpr std::uint8_t kSchemaVersion = 0x02;
-  static constexpr std::uint8_t kSessionId = 0x04;
-  static constexpr std::uint8_t kDeviceId = 0x08;
-  static constexpr std::uint8_t kSessionToken = 0x10;
-  static constexpr std::uint8_t kSsid = 0x20;
-  static constexpr std::uint8_t kPassword = 0x40;
-  static constexpr std::uint8_t kRequiredFields =
+  static constexpr std::uint16_t kSchema = 0x01;
+  static constexpr std::uint16_t kSchemaVersion = 0x02;
+  static constexpr std::uint16_t kSessionId = 0x04;
+  static constexpr std::uint16_t kDeviceId = 0x08;
+  static constexpr std::uint16_t kSessionToken = 0x10;
+  static constexpr std::uint16_t kSsid = 0x20;
+  static constexpr std::uint16_t kPassword = 0x40;
+  static constexpr std::uint16_t kBindingGrant = 0x80;
+  static constexpr std::uint16_t kRequiredFields =
       kSchema | kSchemaVersion | kSessionId | kDeviceId | kSessionToken | kSsid | kPassword;
+  static constexpr std::uint16_t kQrRequiredFields = kRequiredFields | kBindingGrant;
 
   BleProvisioningPayloadParseResult failure(BleWifiProvisioningReason reason) noexcept {
     clearScratch();
     return {reason, std::nullopt};
   }
 
-  bool assignField(BleWifiProvisioningRequestBuilder& builder, std::uint8_t& fields,
+  bool assignField(BleWifiProvisioningRequestBuilder& builder, std::uint16_t& fields,
                    std::string_view key, std::string_view value) {
-    const auto assign = [&fields](std::uint8_t bit) {
+    const auto assign = [&fields](std::uint16_t bit) {
       if ((fields & bit) != 0) return false;
       fields |= bit;
       return true;
     };
-    if (key == "schema") return assign(kSchema) && value == kBleProvisioningPayloadSchema;
-    if (key == "schemaVersion")
-      return assign(kSchemaVersion) && value == kBleProvisioningPayloadSchemaVersion;
+    if (key == "schema") {
+      if (!assign(kSchema)) return false;
+      protocolVersion_ = value == kBleProvisioningPayloadSchema ? 1
+                         : value == kQrBleProvisioningPayloadSchema ? 2 : 0;
+      return protocolVersion_ != 0;
+    }
+    if (key == "schemaVersion") {
+      if (!assign(kSchemaVersion)) return false;
+      schemaVersion_ = value == kBleProvisioningPayloadSchemaVersion ? 1
+                       : value == kQrBleProvisioningPayloadSchemaVersion ? 2 : 0;
+      return schemaVersion_ != 0;
+    }
     if (key == "sessionId")
       return assign(kSessionId) && validUuid(value) && (builder.sessionId(value), true);
     if (key == "deviceId") return assign(kDeviceId) && (builder.deviceId(value), true);
@@ -104,6 +123,9 @@ class BleProvisioningPayloadParser {
       return assign(kSessionToken) && validSessionToken(value) && (builder.sessionToken(value), true);
     if (key == "ssid") return assign(kSsid) && (builder.ssid(value), true);
     if (key == "password") return assign(kPassword) && (builder.password(value), true);
+    if (key == "bindingGrant")
+      return assign(kBindingGrant) && validBindingGrant(value) &&
+             (builder.bindingGrant(value), true);
     return false;
   }
 
@@ -127,6 +149,15 @@ class BleProvisioningPayloadParser {
       if (!((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
             (character >= '0' && character <= '9') || character == '_' || character == '-'))
         return false;
+    return true;
+  }
+  static bool validBindingGrant(std::string_view value) {
+    if (value.size() < 160 || value.size() > 256) return false;
+    for (const char character : value)
+      if (!((character >= 'a' && character <= 'z') ||
+            (character >= 'A' && character <= 'Z') ||
+            (character >= '0' && character <= '9') || character == '_' ||
+            character == '-')) return false;
     return true;
   }
 
@@ -260,6 +291,15 @@ class BleProvisioningPayloadParser {
   std::size_t length_{};
   std::size_t index_{};
   std::size_t scratchSize_{};
+  std::uint16_t protocolVersion_{};
+  std::uint16_t schemaVersion_{};
+};
+
+class QrBleSessionAuthorizer {
+ public:
+  virtual ~QrBleSessionAuthorizer() = default;
+  virtual std::optional<std::uint64_t> authorize(
+      const BleWifiProvisioningRequest& request, std::uint64_t nowTick) = 0;
 };
 
 struct BleProvisioningValidationResult {
@@ -271,6 +311,10 @@ struct BleProvisioningValidationResult {
 
 class BleProvisioningPayloadValidation {
  public:
+  void setQrAuthorizer(QrBleSessionAuthorizer* authorizer) {
+    qrAuthorizer_ = authorizer;
+  }
+  bool qrAuthorizerAvailable() const { return qrAuthorizer_ != nullptr; }
   bool installDevelopmentSession(std::string_view sessionId, std::string_view deviceId,
                                  std::string_view sessionToken, std::uint64_t expiryTick) {
     clear();
@@ -289,9 +333,23 @@ class BleProvisioningPayloadValidation {
                                           std::uint64_t nowTick) {
     auto parsed = parser_.parse(payload.data(), payload.size());
     payload.clear();
-    if (!configured_) return rejected(BleWifiProvisioningReason::INVALID_TRANSITION);
     if (!parsed.accepted()) return rejected(parsed.safeReason);
     auto request = std::move(*parsed.request);
+    if (request.protocolVersion() == BleWifiProvisioningRequest::kQrProtocolVersion) {
+      if (configured_ || qrAuthorizer_ == nullptr)
+        return rejected(BleWifiProvisioningReason::INVALID_TRANSITION);
+      const auto expiryTick = qrAuthorizer_->authorize(request, nowTick);
+      if (!expiryTick ||
+          machine_.prepareSession(request.sessionId(), request.deviceId(),
+                                  request.sessionToken(), *expiryTick).finalState !=
+              BleWifiProvisioningState::SESSION_READY) {
+        request.clear();
+        return rejected(BleWifiProvisioningReason::SESSION_MISMATCH);
+      }
+      configured_ = true;
+      machine_.connectBle();
+    }
+    if (!configured_) return rejected(BleWifiProvisioningReason::INVALID_TRANSITION);
     if (machine_.state() == BleWifiProvisioningState::BLE_CONNECTED) machine_.beginPayload();
     const auto validated = machine_.validatePayload(std::move(request), nowTick);
     if (validated.safeReasonCode != BleWifiProvisioningReason::OK)
@@ -365,6 +423,7 @@ class BleProvisioningPayloadValidation {
   BleWifiProvisioningStateMachine machine_;
   BleWifiCredentialHandoff acceptedCredentials_;
   bool configured_{};
+  QrBleSessionAuthorizer* qrAuthorizer_{};
 };
 
 }  // namespace algaguard

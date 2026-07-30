@@ -1,14 +1,20 @@
 """Fail closed on accidentally packaged credential material without echoing it."""
 from __future__ import annotations
 import argparse
+import re
 from pathlib import Path
 
-MARKERS = {
-    b"-----BEGIN PRIVATE KEY-----": "PRIVATE_KEY_PEM",
-    b"-----BEGIN RSA PRIVATE KEY-----": "RSA_PRIVATE_KEY_PEM",
-    b"sessionToken": "SESSION_TOKEN_MARKER",
-    b"bootstrapToken": "BOOTSTRAP_TOKEN_MARKER",
-    b"Bearer ": "BEARER_TOKEN_MARKER",
+PATTERNS = {
+    re.compile(rb"-----BEGIN PRIVATE KEY-----\s+[A-Za-z0-9+/=\r\n]{32,}"):
+        "PRIVATE_KEY_PEM",
+    re.compile(rb"-----BEGIN RSA PRIVATE KEY-----\s+[A-Za-z0-9+/=\r\n]{32,}"):
+        "RSA_PRIVATE_KEY_PEM",
+    re.compile(rb"sessionToken[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9_-]{16,}"):
+        "SESSION_TOKEN_VALUE",
+    re.compile(rb"bootstrapToken[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9_-]{16,}"):
+        "BOOTSTRAP_TOKEN_VALUE",
+    re.compile(rb"Bearer [A-Za-z0-9._~+/=-]{16,}"):
+        "BEARER_TOKEN_VALUE",
 }
 
 def scan(path: Path) -> list[str]:
@@ -20,8 +26,8 @@ def scan(path: Path) -> list[str]:
             content = file.read_bytes()
         except OSError:
             continue
-        for marker, classification in MARKERS.items():
-            if marker in content:
+        for pattern, classification in PATTERNS.items():
+            if pattern.search(content):
                 findings.append(f"SECRET_SCAN_FAIL file={file} classification={classification}")
     return findings
 

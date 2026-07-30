@@ -102,7 +102,7 @@ void test_121_malformed_request_is_rejected() {
   BleWifiProvisioningStateMachine unsupported;
   receiving(unsupported);
   BleWifiProvisioningRequestBuilder wrong_version;
-  wrong_version.protocolVersion(2)
+  wrong_version.protocolVersion(3)
       .sessionId(kSessionId)
       .deviceId(kDeviceId)
       .sessionToken(kSessionSecret)

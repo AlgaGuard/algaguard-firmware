@@ -175,11 +175,13 @@ class BleWifiCredentialHandoff {
 class BleWifiProvisioningRequest {
  public:
   static constexpr std::uint16_t kProtocolVersion = 1;
+  static constexpr std::uint16_t kQrProtocolVersion = 2;
   static constexpr std::size_t kMaxSessionIdBytes = 64;
   static constexpr std::size_t kMaxDeviceIdBytes = 9;
   static constexpr std::size_t kMaxSessionTokenBytes = 512;
   static constexpr std::size_t kMaxSsidBytes = 32;
   static constexpr std::size_t kMaxPasswordBytes = 63;
+  static constexpr std::size_t kMaxBindingGrantBytes = 256;
 
   BleWifiProvisioningRequest(const BleWifiProvisioningRequest&) = delete;
   BleWifiProvisioningRequest& operator=(const BleWifiProvisioningRequest&) = delete;
@@ -191,7 +193,11 @@ class BleWifiProvisioningRequest {
   std::string_view sessionId() const { return session_id_.view(); }
   std::string_view deviceId() const { return device_id_.view(); }
   std::string_view ssid() const { return ssid_.view(); }
-  bool secretsCleared() const { return session_token_.empty() && password_.empty(); }
+  std::string_view sessionToken() const { return session_token_.view(); }
+  std::string_view bindingGrant() const { return binding_grant_.view(); }
+  bool secretsCleared() const {
+    return session_token_.empty() && binding_grant_.empty() && password_.empty();
+  }
   BleWifiProvisioningReason structuralReasonForAdapter() const { return structural_reason(); }
 
   void clear() noexcept {
@@ -200,6 +206,7 @@ class BleWifiProvisioningRequest {
     session_token_.clear();
     ssid_.clear();
     password_.clear();
+    binding_grant_.clear();
     present_fields_ = 0;
   }
 
@@ -210,14 +217,16 @@ class BleWifiProvisioningRequest {
   BleWifiProvisioningRequest() = default;
 
   BleWifiProvisioningReason structural_reason() const {
-    constexpr std::uint8_t required = 0x1f;
+    const std::uint8_t required =
+        protocol_version_ == kQrProtocolVersion ? 0x3f : 0x1f;
     if (input_reason_ != BleWifiProvisioningReason::OK) return input_reason_;
     if ((present_fields_ & required) != required || session_id_.empty() ||
         device_id_.empty() || session_token_.empty() || ssid_.empty() ||
         password_.empty()) {
       return BleWifiProvisioningReason::MALFORMED_PAYLOAD;
     }
-    if (protocol_version_ != kProtocolVersion) {
+    if (protocol_version_ != kProtocolVersion &&
+        protocol_version_ != kQrProtocolVersion) {
       return BleWifiProvisioningReason::UNSUPPORTED_VERSION;
     }
     if (!valid_device_id(device_id_.view())) {
@@ -234,6 +243,7 @@ class BleWifiProvisioningRequest {
   detail::ProvisioningFieldBuffer<kMaxSessionTokenBytes> session_token_;
   detail::ProvisioningFieldBuffer<kMaxSsidBytes> ssid_;
   detail::ProvisioningFieldBuffer<kMaxPasswordBytes> password_;
+  detail::ProvisioningFieldBuffer<kMaxBindingGrantBytes> binding_grant_;
 };
 
 class BleWifiProvisioningRequestBuilder {
@@ -267,6 +277,10 @@ class BleWifiProvisioningRequestBuilder {
   }
   BleWifiProvisioningRequestBuilder& password(std::string_view value) {
     assign(0x10, request_.password_, value);
+    return *this;
+  }
+  BleWifiProvisioningRequestBuilder& bindingGrant(std::string_view value) {
+    assign(0x20, request_.binding_grant_, value);
     return *this;
   }
 

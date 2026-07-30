@@ -7,6 +7,10 @@
 #include "algaguard/local_demo.hpp"
 #include "algaguard/physical_test_harness.hpp"
 #include "algaguard/physical_provisioning_runtime_bridge.hpp"
+#include "algaguard/esp_qr_onboarding.hpp"
+#include "algaguard/esp_qr_credential_bootstrap.hpp"
+#include "algaguard/qr_onboarding.hpp"
+#include "algaguard/secure_identity.hpp"
 #include "algaguard/startup.hpp"
 #include "algaguard/wifi_connection_runtime.hpp"
 
@@ -22,6 +26,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+#include "qrcode.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -51,6 +58,24 @@ algaguard::LocalDemoMenu local_demo_menu;
 algaguard::LocalDemoReading local_demo_reading{};
 portMUX_TYPE local_demo_lock = portMUX_INITIALIZER_UNLOCKED;
 std::uint32_t local_demo_revision{};
+#endif
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+algaguard::EspQrRandomSource qr_random;
+algaguard::QrOnboardingManager qr_onboarding{qr_random};
+algaguard::EspQrBindingCrypto qr_binding_crypto;
+algaguard::EspQrBleSessionAuthorizer qr_ble_authorizer{qr_onboarding,
+                                                       qr_binding_crypto};
+algaguard::EspDevelopmentSoftwareKeyProvider qr_credential_keys{
+    algaguard::SecurityProfile::kDevSoftwareKey};
+algaguard::EspDevelopmentCredentialStorage qr_credential_storage{
+    algaguard::SecurityProfile::kDevSoftwareKey};
+algaguard::EspQrCredentialBootstrapTransport qr_credential_transport{
+    std::string{algaguard::active_firmware_config().bootstrap_api_url}};
+algaguard::QrCredentialBootstrapCoordinator qr_credential_bootstrap{
+    qr_credential_keys, qr_credential_storage, qr_credential_transport};
+enum class QrDisplayMode : std::uint8_t { kPrompt, kCode, kLocalDemo };
+QrDisplayMode qr_display_mode{QrDisplayMode::kPrompt};
+std::uint32_t qr_display_revision{};
 #endif
 algaguard::EspIdfBleProvisioningTransport ble_provisioning_transport;
 algaguard::EspIdfWifiConnectionAdapter wifi_connection_adapter;
@@ -247,6 +272,42 @@ esp_err_t configure_oled_i2c() {
   return ESP_OK;
 }
 
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+void draw_pixel(std::array<std::uint8_t, 1024>& framebuffer,
+                std::uint8_t x, std::uint8_t y) {
+  if (x >= 128 || y >= 64) return;
+  framebuffer[(y / 8U) * 128U + x] |=
+      static_cast<std::uint8_t>(1U << (y % 8U));
+}
+
+esp_err_t render_qr_code(std::string_view uri) {
+  if (uri.size() != algaguard::kQrInvitationUriBytes) return ESP_ERR_INVALID_ARG;
+  std::array<std::uint8_t, 512> modules{};
+  QRCode code{};
+  const std::string text{uri};
+  if (qrcode_initText(&code, modules.data(), 3, ECC_LOW, text.c_str()) != 0 ||
+      code.size > 33) return ESP_FAIL;
+  std::array<std::uint8_t, 1024> framebuffer{};
+  constexpr std::uint8_t quiet = 4;
+  const auto total = static_cast<std::uint8_t>(code.size + quiet * 2U);
+  const auto originX = static_cast<std::uint8_t>((128U - total) / 2U);
+  const auto originY = static_cast<std::uint8_t>((64U - total) / 2U);
+  for (std::uint8_t y = 0; y < code.size; ++y)
+    for (std::uint8_t x = 0; x < code.size; ++x)
+      if (qrcode_getModule(&code, x, y))
+        draw_pixel(framebuffer, static_cast<std::uint8_t>(originX + quiet + x),
+                   static_cast<std::uint8_t>(originY + quiet + y));
+  return oled_framebuffer(framebuffer);
+}
+
+esp_err_t render_qr_prompt() {
+  algaguard::DiagnosticScreen screen{};
+  screen.lines = {{"SCAN TO ADD", "PRESS SELECT", "QR IS ONE TIME",
+                   "BACK DEMO MODE"}};
+  return render_screen(screen);
+}
+#endif
+
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
 algaguard::PhysicalTestState current_physical_test_state(
     algaguard::BleAdvertisingRuntimeStatus advertising) {
@@ -352,7 +413,7 @@ class EspFoundationServices final : public algaguard::StartupServices {
     ble_provisioning_transport.recordAdvertisingStage(
         algaguard::BleAdvertisingStage::kNvsReady, result);
 #endif
-#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
+#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS) && !defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
     initialize_physical_session_console();
     ESP_LOGI(kTag, "LOCAL_DEMO_RUNTIME_READY wifi=NOT_CONFIGURED cloud=OFFLINE persistence=false");
     return {algaguard::OperationStatus::kSuccess};
@@ -485,6 +546,31 @@ void render_startup_state() {
     page = local_demo_menu.page();
     revision = local_demo_revision;
     portEXIT_CRITICAL(&local_demo_lock);
+    #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+    const auto qrNow = static_cast<std::uint32_t>(xTaskGetTickCount() / configTICK_RATE_HZ);
+    qr_onboarding.tick(qrNow);
+    if (qr_display_mode != QrDisplayMode::kLocalDemo) {
+      const auto combinedRevision = revision + qr_display_revision;
+      if (combinedRevision == last_demo_revision) return;
+      last_demo_revision = combinedRevision;
+      esp_err_t result = ESP_OK;
+      if (qr_onboarding.state() == algaguard::QrOnboardingState::kExpired) {
+        algaguard::DiagnosticScreen expired{};
+        expired.lines = {{"QR EXPIRED", "PRESS SELECT", "FOR NEW QR", "NO SECRETS"}};
+        result = render_screen(expired);
+      } else if (qr_onboarding.state() == algaguard::QrOnboardingState::kConsumed) {
+        algaguard::DiagnosticScreen consumed{};
+        consumed.lines = {{"QR CONSUMED", "ONBOARDING", "IN PROGRESS", "NO SECRETS"}};
+        result = render_screen(consumed);
+      } else if (qr_display_mode == QrDisplayMode::kCode) {
+        result = render_qr_code(qr_onboarding.uri());
+      } else {
+        result = render_qr_prompt();
+      }
+      if (result != ESP_OK) ESP_LOGE(kTag, "display_update_failed mode=QR_ONBOARDING");
+      return;
+    }
+    #endif
     if (revision == last_demo_revision) return;
     last_demo_revision = revision;
     const bool advertising = ble_provisioning_transport.advertisingRuntimeStatus().advertisingActive;
@@ -736,10 +822,34 @@ void input_task(void*) {
                 algaguard::hardware::kButtonSelect)) == 0,
             now) == algaguard::ButtonEvent::kShortPress) {
 #if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+      if (qr_display_mode == QrDisplayMode::kPrompt) {
+        qr_display_mode = QrDisplayMode::kCode;
+        ++qr_display_revision;
+      } else if (qr_display_mode == QrDisplayMode::kCode &&
+                 qr_onboarding.state() == algaguard::QrOnboardingState::kExpired) {
+        const auto issued = std::max<std::uint32_t>(
+            1U, static_cast<std::uint32_t>(xTaskGetTickCount() / configTICK_RATE_HZ));
+        (void)qr_onboarding.generate(
+            algaguard::active_firmware_config().device_id, issued);
+        ++qr_display_revision;
+      } else if (qr_display_mode == QrDisplayMode::kLocalDemo) {
+        if (local_demo_menu.page() == algaguard::LocalDemoPage::kHome) {
+          qr_display_mode = QrDisplayMode::kPrompt;
+          ++qr_display_revision;
+        } else {
+          portENTER_CRITICAL(&local_demo_lock);
+          local_demo_menu.select();
+          ++local_demo_revision;
+          portEXIT_CRITICAL(&local_demo_lock);
+        }
+      }
+#else
       portENTER_CRITICAL(&local_demo_lock);
       local_demo_menu.select();
       ++local_demo_revision;
       portEXIT_CRITICAL(&local_demo_lock);
+#endif
 #else
       menu.select();
       if (menu.reset_confirmed()) startup.confirmed_reset(true);
@@ -751,10 +861,19 @@ void input_task(void*) {
             now) == algaguard::ButtonEvent::kShortPress)
 #if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
       {
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+        if (qr_display_mode != QrDisplayMode::kLocalDemo) {
+          qr_display_mode = QrDisplayMode::kLocalDemo;
+          ++qr_display_revision;
+        } else {
+#endif
         portENTER_CRITICAL(&local_demo_lock);
         local_demo_menu.home();
         ++local_demo_revision;
         portEXIT_CRITICAL(&local_demo_lock);
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+        }
+#endif
       }
 #else
       menu.back();
@@ -762,6 +881,32 @@ void input_task(void*) {
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
+
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+void credential_bootstrap_task(void*) {
+  while (true) {
+    if (wifi_connection_runtime.state() !=
+            algaguard::WifiConnectionState::kConnected ||
+        !qr_ble_authorizer.bootstrapPending()) {
+      vTaskDelay(pdMS_TO_TICKS(200));
+      continue;
+    }
+    const auto result = qr_credential_bootstrap.run(
+        qr_ble_authorizer.takeBootstrapContext());
+    if (result == algaguard::QrCredentialBootstrapResult::kSuccess) {
+      ESP_LOGI(kTag,
+               "QR_CREDENTIAL_BOOTSTRAP_ACTIVE privateKeyExported=false "
+               "sessionCleared=true persistence=development-credential-only");
+    } else {
+      ESP_LOGE(kTag,
+               "QR_CREDENTIAL_BOOTSTRAP_FAILED category=%u "
+               "privateKeyExported=false sessionCleared=true",
+               static_cast<unsigned>(result));
+    }
+    vTaskDelete(nullptr);
+  }
+}
+#endif
 }  // namespace
 
 extern "C" void app_main() {
@@ -813,7 +958,19 @@ extern "C" void app_main() {
   // display preflight fails, so a wiring/address fault can be diagnosed safely.
   initialize_physical_session_console();
 #endif
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+  const auto qrIssued = std::max<std::uint32_t>(
+      1U, static_cast<std::uint32_t>(xTaskGetTickCount() / configTICK_RATE_HZ));
+  if (!qr_onboarding.generate(algaguard::active_firmware_config().device_id,
+                              qrIssued))
+    ESP_LOGE(kTag, "qr_onboarding_state=QR_ERROR");
+  ble_provisioning_transport.setQrSessionAuthorizer(&qr_ble_authorizer);
+#endif
   xTaskCreate(startup_task, "startup_state", 6144, nullptr, 8, nullptr);
   xTaskCreate(input_task, "buttons", 4096, nullptr, 5, nullptr);
   xTaskCreate(sampling_task, "simulated_sampling", 4096, nullptr, 4, nullptr);
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+  xTaskCreate(credential_bootstrap_task, "qr_credential_bootstrap", 12288,
+              nullptr, 7, nullptr);
+#endif
 }
