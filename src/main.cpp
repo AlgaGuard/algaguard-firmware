@@ -561,7 +561,9 @@ void render_startup_state() {
     const auto qrNow = static_cast<std::uint32_t>(xTaskGetTickCount() / configTICK_RATE_HZ);
     qr_onboarding.tick(qrNow);
     if (qr_display_mode != QrDisplayMode::kLocalDemo) {
-      const auto combinedRevision = revision + qr_display_revision;
+      const auto combinedRevision =
+          revision + qr_display_revision +
+          (static_cast<std::uint32_t>(qr_onboarding.state()) << 16U);
       if (combinedRevision == last_demo_revision) return;
       last_demo_revision = combinedRevision;
       esp_err_t result = ESP_OK;
@@ -571,8 +573,12 @@ void render_startup_state() {
         result = render_screen(expired);
       } else if (qr_onboarding.state() == algaguard::QrOnboardingState::kConsumed) {
         algaguard::DiagnosticScreen consumed{};
-        consumed.lines = {{"QR CONSUMED", "ONBOARDING", "IN PROGRESS", "NO SECRETS"}};
+        consumed.lines = {{"QR USED", "PRESS SELECT", "FOR NEW QR", "NO SECRETS"}};
         result = render_screen(consumed);
+      } else if (qr_onboarding.state() == algaguard::QrOnboardingState::kError) {
+        algaguard::DiagnosticScreen error{};
+        error.lines = {{"QR ERROR", "PRESS SELECT", "FOR NEW QR", "NO SECRETS"}};
+        result = render_screen(error);
       } else if (qr_display_mode == QrDisplayMode::kCode) {
         result = render_qr_code(qr_onboarding.uri());
       } else {
@@ -837,8 +843,7 @@ void input_task(void*) {
       if (qr_display_mode == QrDisplayMode::kPrompt) {
         qr_display_mode = QrDisplayMode::kCode;
         ++qr_display_revision;
-      } else if (qr_display_mode == QrDisplayMode::kCode &&
-                 qr_onboarding.state() == algaguard::QrOnboardingState::kExpired) {
+      } else if (qr_display_mode == QrDisplayMode::kCode) {
         const auto issued = std::max<std::uint32_t>(
             1U, static_cast<std::uint32_t>(xTaskGetTickCount() / configTICK_RATE_HZ));
         (void)qr_onboarding.generate(

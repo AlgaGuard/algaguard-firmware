@@ -298,6 +298,16 @@ void test_236_new_qr_rotates_nonce_storage() {
   TEST_ASSERT_FALSE(manager.nonceCleared());
   TEST_ASSERT_NOT_EQUAL(0, first.compare(std::string{manager.uri()}));
 }
+void test_237_fresh_attempt_can_rotate_before_expiry() {
+  Random random; algaguard::QrOnboardingManager manager{random};
+  TEST_ASSERT_TRUE(manager.generate("AG-000001", 1000));
+  const auto first = std::string{manager.uri()};
+  TEST_ASSERT_TRUE(manager.generate("AG-000001", 1010));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(algaguard::QrOnboardingState::kReady),
+                        static_cast<int>(manager.state()));
+  TEST_ASSERT_FALSE(manager.nonceCleared());
+  TEST_ASSERT_NOT_EQUAL(0, first.compare(std::string{manager.uri()}));
+}
 void test_237_session_cleanup_zeroizes_values() {
   algaguard::QrAuthorizedSession session{"id", "AG-000001", "secret", 1};
   session.clear();
@@ -371,6 +381,7 @@ int main(int, char**) {
   RUN_TEST(test_234_malformed_grant_denied);
   RUN_TEST(test_235_clear_is_idempotent);
   RUN_TEST(test_236_new_qr_rotates_nonce_storage);
+  RUN_TEST(test_237_fresh_attempt_can_rotate_before_expiry);
   RUN_TEST(test_237_session_cleanup_zeroizes_values);
   RUN_TEST(test_238_got_ip_bootstrap_issues_and_activates_once);
   RUN_TEST(test_239_exchange_failure_does_not_generate_key);
