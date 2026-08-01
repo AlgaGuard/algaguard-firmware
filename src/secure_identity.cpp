@@ -83,15 +83,6 @@ bool ecdsa_raw_signature_to_der(
 
 VolatileKey g_key;
 
-bool dev_profile_enabled(SecurityProfile profile) {
-#if defined(ALGAGUARD_SECURITY_PROFILE_DEV_SOFTWARE_KEY) && defined(ALGAGUARD_ALLOW_INSECURE_KEY_STORAGE)
-  return profile == SecurityProfile::kDevSoftwareKey;
-#else
-  (void)profile;
-  return false;
-#endif
-}
-
 void wipe(void* data, std::size_t size) {
   if (data != nullptr && size != 0) mbedtls_platform_zeroize(data, size);
 }
@@ -220,7 +211,14 @@ EspDevelopmentSoftwareKeyProvider::EspDevelopmentSoftwareKeyProvider(SecurityPro
 EspDevelopmentSoftwareKeyProvider::~EspDevelopmentSoftwareKeyProvider() = default;
 
 SecurityStatus EspDevelopmentSoftwareKeyProvider::status() const {
-  return dev_profile_enabled(profile_) ? SecurityStatus::kReady : SecurityStatus::kUnavailable;
+#if defined(ALGAGUARD_SECURITY_PROFILE_DEV_SOFTWARE_KEY) && \
+    defined(ALGAGUARD_ALLOW_INSECURE_KEY_STORAGE)
+  return profile_ == SecurityProfile::kDevSoftwareKey
+             ? SecurityStatus::kReady
+             : SecurityStatus::kUnavailable;
+#else
+  return SecurityStatus::kUnavailable;
+#endif
 }
 
 std::optional<PrivateKeyHandle> EspDevelopmentSoftwareKeyProvider::generate(KeyAlgorithm algorithm) {
@@ -302,7 +300,14 @@ EspDevelopmentCredentialStorage::EspDevelopmentCredentialStorage(SecurityProfile
     : profile_(profile), impl_(std::make_unique<Impl>()) {}
 EspDevelopmentCredentialStorage::~EspDevelopmentCredentialStorage() = default;
 SecurityStatus EspDevelopmentCredentialStorage::status() const {
-  return dev_profile_enabled(profile_) ? SecurityStatus::kReady : SecurityStatus::kUnavailable;
+#if defined(ALGAGUARD_SECURITY_PROFILE_DEV_SOFTWARE_KEY) && \
+    defined(ALGAGUARD_ALLOW_INSECURE_KEY_STORAGE)
+  return profile_ == SecurityProfile::kDevSoftwareKey
+             ? SecurityStatus::kReady
+             : SecurityStatus::kUnavailable;
+#else
+  return SecurityStatus::kUnavailable;
+#endif
 }
 
 bool EspDevelopmentCredentialStorage::stage(const PrivateKeyHandle& key, const PublicCredentialBundle& bundle) {
