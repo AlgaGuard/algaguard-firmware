@@ -20,6 +20,7 @@ extern "C" {
 #include "nimble/nimble_port_freertos.h"
 #include "os/os_mbuf.h"
 #include "services/gap/ble_svc_gap.h"
+#include "services/gatt/ble_svc_gatt.h"
 }
 
 namespace algaguard {
@@ -32,6 +33,25 @@ ble_uuid128_t kRequestUuid = BLE_UUID128_INIT(0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00
 ble_uuid128_t kStatusUuid = BLE_UUID128_INIT(0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80,
                                              0x00, 0x10, 0x00, 0x00, 0xa2, 0xa1, 0x00, 0x00);
 EspIdfBleProvisioningTransport* gTransport{};
+
+void record_gatt_contract_status() {
+  std::uint16_t serviceHandle{};
+  std::uint16_t requestDefinitionHandle{};
+  std::uint16_t requestValueHandle{};
+  std::uint16_t statusDefinitionHandle{};
+  std::uint16_t statusValueHandle{};
+
+  const bool servicePresent = ble_gatts_find_svc(&kServiceUuid.u, &serviceHandle) == 0;
+  const bool requestPresent =
+      ble_gatts_find_chr(&kServiceUuid.u, &kRequestUuid.u, &requestDefinitionHandle,
+                         &requestValueHandle) == 0;
+  const bool statusPresent =
+      ble_gatts_find_chr(&kServiceUuid.u, &kStatusUuid.u, &statusDefinitionHandle,
+                         &statusValueHandle) == 0;
+  ESP_LOGI("algaguard_ble", "gatt_contract service=%s request=%s status=%s",
+           servicePresent ? "present" : "missing", requestPresent ? "present" : "missing",
+           statusPresent ? "present" : "missing");
+}
 
 void clear_bytes(std::array<std::uint8_t, kBleProvisioningMaxFrameBytes>& bytes) noexcept {
   volatile std::uint8_t* cursor = bytes.data();
@@ -101,6 +121,7 @@ int gap_event(ble_gap_event* event, void* argument) {
 void on_sync() {
   if (gTransport != nullptr) {
     gTransport->recordAdvertisingStage(BleAdvertisingStage::kHostSynced);
+    record_gatt_contract_status();
     (void)gTransport->startAdvertising();
   }
 }
@@ -121,6 +142,7 @@ bool EspIdfBleProvisioningTransport::init() {
     return false;
   }
   ble_svc_gap_init();
+  ble_svc_gatt_init();
   if (ble_svc_gap_device_name_set(kBleProvisioningAdvertisingName) != 0) {
     (void)nimble_port_deinit();
     recordAdvertisingStage(BleAdvertisingStage::kAdvStartFailed, -1);
@@ -149,7 +171,17 @@ bool EspIdfBleProvisioningTransport::startGattService() {
     characteristics[2] = {};
     services[0] = {BLE_GATT_SVC_TYPE_PRIMARY, &kServiceUuid.u, nullptr, characteristics};
     services[1] = {};
-    if (ble_gatts_count_cfg(services) != 0 || ble_gatts_add_svcs(services) != 0) return false;
+    const int countResult = ble_gatts_count_cfg(services);
+    if (countResult != 0) {
+      ESP_LOGE("algaguard_ble", "gatt_service_count_failed code=%d", countResult);
+      return false;
+    }
+    const int addResult = ble_gatts_add_svcs(services);
+    if (addResult != 0) {
+      ESP_LOGE("algaguard_ble", "gatt_service_add_failed code=%d", addResult);
+      return false;
+    }
+    ESP_LOGI("algaguard_ble", "gatt_service_registered=true");
     serviceRegistered_ = true;
   }
   serviceStarted_ = true;
