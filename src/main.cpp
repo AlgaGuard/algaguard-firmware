@@ -799,10 +799,15 @@ void sampling_task(void*) {
 }
 
 void input_task(void*) {
+  bool input_ready_logged = false;
   while (true) {
     if (startup.state() < algaguard::StartupState::kProvisioningStateLoad) {
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
+    }
+    if (!input_ready_logged) {
+      ESP_LOGI(kTag, "BUTTON_INPUT_READY activeLow=true debounceMs=35");
+      input_ready_logged = true;
     }
     const auto now =
         static_cast<std::uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <array>
 #include <cstdint>
 #include <string_view>
@@ -116,19 +117,20 @@ class StartupStateMachine {
   explicit StartupStateMachine(StartupServices& services, RetryPolicy retry_policy = {})
       : services_(services), retry_policy_(retry_policy) {}
 
-  StartupState state() const { return state_; }
+  StartupState state() const { return state_.load(std::memory_order_acquire); }
   StartupReason reason() const { return reason_; }
   std::uint8_t retry_attempt() const { return retry_attempt_; }
   std::uint32_t retry_delay_ms() const { return retry_policy_.delay_ms(retry_attempt_); }
 
   void tick() {
-    if (state_ == StartupState::kUnprovisioned ||
-        state_ == StartupState::kOnline ||
-        state_ == StartupState::kDegraded ||
-        state_ == StartupState::kFault)
+    const auto current = state();
+    if (current == StartupState::kUnprovisioned ||
+        current == StartupState::kOnline ||
+        current == StartupState::kDegraded ||
+        current == StartupState::kFault)
       return;
     StartupResult result;
-    switch (state_) {
+    switch (current) {
       case StartupState::kPlatformInit:
         result = services_.platform_init();
         advance(result, StartupState::kStorageInit);
@@ -207,19 +209,19 @@ class StartupStateMachine {
   }
 
   bool begin_provisioning() {
-    if (state_ != StartupState::kUnprovisioned) return false;
+    if (state() != StartupState::kUnprovisioned) return false;
     state_ = StartupState::kBleProvisioning;
     return true;
   }
 
   bool wifi_credentials_received() {
-    if (state_ != StartupState::kBleProvisioning) return false;
+    if (state() != StartupState::kBleProvisioning) return false;
     state_ = StartupState::kWifiConnecting;
     return true;
   }
 
   bool retry() {
-    if (state_ != StartupState::kDegraded || retry_attempt_ >= retry_policy_.maximum_attempts)
+    if (state() != StartupState::kDegraded || retry_attempt_ >= retry_policy_.maximum_attempts)
       return false;
     ++retry_attempt_;
     state_ = retry_state_;
@@ -246,7 +248,7 @@ class StartupStateMachine {
   }
 
   void handle_failure(const StartupResult& result) {
-    retry_state_ = state_;
+    retry_state_ = state();
     if (result.status == OperationStatus::kFatalFailure) {
       state_ = StartupState::kFault;
       reason_ = result.reason == StartupReason::kNone
@@ -270,7 +272,9 @@ class StartupStateMachine {
 
   StartupServices& services_;
   RetryPolicy retry_policy_;
-  StartupState state_{StartupState::kPlatformInit};
+  // Startup advances on its worker while input/sampling tasks observe it.
+  // Acquire/release publication prevents those tasks from retaining boot state.
+  std::atomic<StartupState> state_{StartupState::kPlatformInit};
   StartupState retry_state_{StartupState::kPlatformInit};
   StartupReason reason_{StartupReason::kNone};
   std::uint8_t retry_attempt_{};
