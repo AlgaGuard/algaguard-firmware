@@ -983,14 +983,30 @@ extern "C" void app_main() {
   ble_provisioning_transport.setQrSessionAuthorizer(&qr_ble_authorizer);
 #endif
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
-  xTaskCreate(startup_task, "startup_state", 12288, nullptr, 8, nullptr);
+  const auto bootstrapTaskCreated = xTaskCreate(
+      credential_bootstrap_task, "qr_credential_bootstrap", 12288, nullptr, 7,
+      nullptr);
+  const auto startupTaskCreated =
+      bootstrapTaskCreated == pdPASS
+          ? xTaskCreate(startup_task, "startup_state", 12288, nullptr, 8,
+                        nullptr)
+          : pdFAIL;
 #else
-  xTaskCreate(startup_task, "startup_state", 6144, nullptr, 8, nullptr);
+  const auto startupTaskCreated =
+      xTaskCreate(startup_task, "startup_state", 6144, nullptr, 8, nullptr);
 #endif
-  xTaskCreate(input_task, "buttons", 4096, nullptr, 5, nullptr);
-  xTaskCreate(sampling_task, "simulated_sampling", 4096, nullptr, 4, nullptr);
+  const auto inputTaskCreated =
+      xTaskCreate(input_task, "buttons", 4096, nullptr, 5, nullptr);
+  const auto samplingTaskCreated =
+      xTaskCreate(sampling_task, "simulated_sampling", 4096, nullptr, 4,
+                  nullptr);
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
-  xTaskCreate(credential_bootstrap_task, "qr_credential_bootstrap", 12288,
-              nullptr, 7, nullptr);
+  if (bootstrapTaskCreated != pdPASS)
+    ESP_LOGE(kTag,
+             "QR_CREDENTIAL_BOOTSTRAP_FAILED category=8 "
+             "privateKeyExported=false bootstrapWorkerReady=false");
 #endif
+  if (startupTaskCreated != pdPASS || inputTaskCreated != pdPASS ||
+      samplingTaskCreated != pdPASS)
+    ESP_LOGE(kTag, "runtime_task_start_failed secretsCleared=true");
 }

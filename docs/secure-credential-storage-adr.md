@@ -2,7 +2,7 @@
 
 ## Decision
 
-The active university/demo architecture is `DEV_SOFTWARE_KEY`. It generates RSA-3072 with ESP-IDF 6.0.1 PSA Crypto, writes a CSR through `mbedtls_pk_wrap_psa` and `mbedtls_x509write_csr_*`, then stores the PKCS#1 DER private key, client certificate and CA chain in the ordinary `algaguard_dev_identity` NVS namespace.
+The active QR demo architecture is `DEV_SOFTWARE_KEY`. It generates EC P-256 with ESP-IDF 6.0.1 PSA Crypto, writes a CSR through `mbedtls_pk_wrap_psa` and `mbedtls_x509write_csr_*`, then stores the exported development private key, client certificate and CA chain in the ordinary `algaguard_dev_identity` NVS namespace. The provider retains RSA-3072 support for existing development identity fixtures, but QR onboarding selects EC P-256 to keep physical key generation bounded.
 
 **DEV_SOFTWARE_KEY stores the device private key in ordinary ESP32-S3 flash-backed NVS. It is intended only for university development and demonstration. It does not protect the key against physical flash extraction and must never be enabled for a production deployment.**
 

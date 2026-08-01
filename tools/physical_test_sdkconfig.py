@@ -1,11 +1,16 @@
-"""Ensure only the physical-test profile starts with its UART console config."""
+"""Ensure physical hardware profiles start with their COM16 UART console."""
 
 from pathlib import Path
 import shutil
 
 Import("env")
 
-if env.subst("$PIOENV") == "esp32-s3-dev-ble-wifi-physical-test":
+uart_console_profiles = {
+    "esp32-s3-dev-ble-wifi-physical-test",
+    "esp32-s3-dev-qr-onboarding-demo",
+}
+
+if env.subst("$PIOENV") in uart_console_profiles:
     root = Path(env.subst("$PROJECT_DIR"))
     defaults = root / "sdkconfig.physical-test.defaults"
     generated = root / f"sdkconfig.{env.subst('$PIOENV')}"
@@ -16,4 +21,4 @@ if env.subst("$PIOENV") == "esp32-s3-dev-ble-wifi-physical-test":
     current = generated.read_text(encoding="utf-8") if generated.exists() else ""
     if not all(entry in current for entry in required):
         shutil.copyfile(defaults, generated)
-        print("Physical-test SDK config initialized with UART console on COM16.")
+        print("Physical hardware SDK config initialized with UART console on COM16.")

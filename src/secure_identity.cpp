@@ -8,6 +8,8 @@
 #include "nvs_flash.h"
 
 #include "mbedtls/pk.h"
+#include "mbedtls/asn1write.h"
+#include "mbedtls/bignum.h"
 #include "mbedtls/platform_util.h"
 #include "mbedtls/x509.h"
 #include "mbedtls/x509_crt.h"
@@ -22,15 +24,62 @@ namespace algaguard {
 namespace {
 constexpr char kNamespace[] = "algaguard_dev_identity";
 constexpr std::size_t kRsaBits = 3072;
-constexpr std::size_t kRsaBytes = kRsaBits / 8;
+constexpr std::size_t kEcBits = 256;
 constexpr std::size_t kPrivateKeyExportMax = PSA_EXPORT_KEY_OUTPUT_SIZE(PSA_KEY_TYPE_RSA_KEY_PAIR, kRsaBits);
 constexpr std::size_t kCsrMaxBytes = ALGAGUARD_CREDENTIAL_MAX_CSR_BYTES;
 
 struct VolatileKey {
   mbedtls_svc_key_id_t id{MBEDTLS_SVC_KEY_ID_INIT};
   PrivateKeyHandle handle{};
+  KeyAlgorithm algorithm{KeyAlgorithm::kEcP256};
   bool active{};
 };
+
+bool ecdsa_raw_signature_to_der(
+    const unsigned char* raw, std::size_t raw_size,
+    std::array<unsigned char, 80>* output, const unsigned char** der,
+    std::size_t* der_size) {
+  if (raw == nullptr || raw_size != 64 || output == nullptr || der == nullptr ||
+      der_size == nullptr)
+    return false;
+  mbedtls_mpi r;
+  mbedtls_mpi s;
+  mbedtls_mpi_init(&r);
+  mbedtls_mpi_init(&s);
+  auto* cursor = output->data() + output->size();
+  const auto* begin = output->data();
+  int written = 0;
+  bool ok = mbedtls_mpi_read_binary(&r, raw, 32) == 0 &&
+            mbedtls_mpi_read_binary(&s, raw + 32, 32) == 0;
+  if (ok) {
+    const int part = mbedtls_asn1_write_mpi(&cursor, begin, &s);
+    ok = part >= 0;
+    if (ok) written += part;
+  }
+  if (ok) {
+    const int part = mbedtls_asn1_write_mpi(&cursor, begin, &r);
+    ok = part >= 0;
+    if (ok) written += part;
+  }
+  if (ok) {
+    const int part =
+        mbedtls_asn1_write_len(&cursor, begin, static_cast<std::size_t>(written));
+    ok = part >= 0;
+    if (ok) written += part;
+  }
+  if (ok) {
+    const int part = mbedtls_asn1_write_tag(
+        &cursor, begin, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE);
+    ok = part >= 0;
+    if (ok) written += part;
+  }
+  mbedtls_mpi_free(&r);
+  mbedtls_mpi_free(&s);
+  if (!ok) return false;
+  *der = cursor;
+  *der_size = static_cast<std::size_t>(written);
+  return true;
+}
 
 VolatileKey g_key;
 
@@ -128,20 +177,36 @@ bool certificate_matches_current_key(const std::string& certificate) {
   const int parsed = mbedtls_x509_crt_parse(&crt,
       reinterpret_cast<const unsigned char*>(certificate.c_str()), certificate.size() + 1);
   std::array<unsigned char, 32> challenge{};
-  std::array<unsigned char, kRsaBytes> signature{};
+  std::array<unsigned char, PSA_SIGNATURE_MAX_SIZE> signature{};
   std::size_t signature_size = 0;
   esp_fill_random(challenge.data(), challenge.size());
+  const psa_algorithm_t signing_algorithm =
+      g_key.algorithm == KeyAlgorithm::kEcP256
+          ? PSA_ALG_ECDSA(PSA_ALG_SHA_256)
+          : PSA_ALG_RSA_PKCS1V15_SIGN(PSA_ALG_SHA_256);
   const psa_status_t signed_value = parsed == 0 ? psa_sign_message(
-      g_key.id, PSA_ALG_RSA_PKCS1V15_SIGN(PSA_ALG_SHA_256), challenge.data(), challenge.size(),
+      g_key.id, signing_algorithm, challenge.data(), challenge.size(),
       signature.data(), signature.size(), &signature_size) : PSA_ERROR_INVALID_ARGUMENT;
   std::array<unsigned char, 32> hash{};
+  std::array<unsigned char, 80> encoded_signature{};
   std::size_t hash_size = 0;
   const psa_status_t hashed = signed_value == PSA_SUCCESS ? psa_hash_compute(
       PSA_ALG_SHA_256, challenge.data(), challenge.size(), hash.data(), hash.size(), &hash_size) : PSA_ERROR_INVALID_ARGUMENT;
-  const int verified = hashed == PSA_SUCCESS && hash_size == hash.size()
-      ? mbedtls_pk_verify(&crt.pk, MBEDTLS_MD_SHA256, hash.data(), hash.size(), signature.data(), signature_size) : -1;
+  const unsigned char* verification_signature = signature.data();
+  std::size_t verification_signature_size = signature_size;
+  const bool signature_ready =
+      g_key.algorithm != KeyAlgorithm::kEcP256 ||
+      ecdsa_raw_signature_to_der(signature.data(), signature_size,
+                                 &encoded_signature, &verification_signature,
+                                 &verification_signature_size);
+  const int verified = hashed == PSA_SUCCESS && hash_size == hash.size() &&
+                               signature_ready
+      ? mbedtls_pk_verify(&crt.pk, MBEDTLS_MD_SHA256, hash.data(), hash.size(),
+                          verification_signature, verification_signature_size)
+      : -1;
   wipe(challenge.data(), challenge.size());
   wipe(signature.data(), signature.size());
+  wipe(encoded_signature.data(), encoded_signature.size());
   wipe(hash.data(), hash.size());
   mbedtls_x509_crt_free(&crt);
   return verified == 0;
@@ -159,14 +224,22 @@ SecurityStatus EspDevelopmentSoftwareKeyProvider::status() const {
 }
 
 std::optional<PrivateKeyHandle> EspDevelopmentSoftwareKeyProvider::generate(KeyAlgorithm algorithm) {
-  if (status() != SecurityStatus::kReady || algorithm != KeyAlgorithm::kRsa3072 || psa_crypto_init() != PSA_SUCCESS)
+  if (status() != SecurityStatus::kReady ||
+      (algorithm != KeyAlgorithm::kEcP256 &&
+       algorithm != KeyAlgorithm::kRsa3072) ||
+      psa_crypto_init() != PSA_SUCCESS)
     return std::nullopt;
   clear_volatile_key();
   psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
-  psa_set_key_type(&attributes, PSA_KEY_TYPE_RSA_KEY_PAIR);
-  psa_set_key_bits(&attributes, kRsaBits);
+  const bool ec = algorithm == KeyAlgorithm::kEcP256;
+  psa_set_key_type(&attributes, ec
+      ? PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1)
+      : PSA_KEY_TYPE_RSA_KEY_PAIR);
+  psa_set_key_bits(&attributes, ec ? kEcBits : kRsaBits);
   psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_MESSAGE | PSA_KEY_USAGE_EXPORT);
-  psa_set_key_algorithm(&attributes, PSA_ALG_RSA_PKCS1V15_SIGN(PSA_ALG_SHA_256));
+  psa_set_key_algorithm(&attributes, ec
+      ? PSA_ALG_ECDSA(PSA_ALG_SHA_256)
+      : PSA_ALG_RSA_PKCS1V15_SIGN(PSA_ALG_SHA_256));
   if (psa_generate_key(&attributes, &g_key.id) != PSA_SUCCESS) {
     psa_reset_key_attributes(&attributes);
     clear_volatile_key();
@@ -174,6 +247,7 @@ std::optional<PrivateKeyHandle> EspDevelopmentSoftwareKeyProvider::generate(KeyA
   }
   psa_reset_key_attributes(&attributes);
   g_key.handle = {1, g_key.handle.generation + 1};
+  g_key.algorithm = algorithm;
   g_key.active = true;
   return g_key.handle;
 }
@@ -205,7 +279,8 @@ std::optional<CsrSubmission> EspDevelopmentSoftwareKeyProvider::create_csr(const
     wipe(pem.data(), pem.size());
     return std::nullopt;
   }
-  CsrSubmission csr{reinterpret_cast<const char*>(pem.data()), binding, KeyAlgorithm::kRsa3072};
+  CsrSubmission csr{reinterpret_cast<const char*>(pem.data()), binding,
+                    g_key.algorithm};
   wipe(pem.data(), pem.size());
   return csr;
 }

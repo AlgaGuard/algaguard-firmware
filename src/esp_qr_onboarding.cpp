@@ -106,7 +106,7 @@ bool EspQrBindingCrypto::verifyP256Sha256(
 
 std::optional<std::uint64_t> EspQrBleSessionAuthorizer::authorize(
     const BleWifiProvisioningRequest& request, std::uint64_t nowTick) {
-  if (bootstrap_.pending()) return std::nullopt;
+  if (bootstrapPending()) return std::nullopt;
   const auto nowSeconds =
       static_cast<std::uint32_t>(nowTick / configTICK_RATE_HZ);
   auto authorized = manager_.authorize(
@@ -118,19 +118,47 @@ std::optional<std::uint64_t> EspQrBleSessionAuthorizer::authorize(
     authorized->clear();
     return std::nullopt;
   }
+  if (bootstrapMutex_ == nullptr ||
+      xSemaphoreTake(bootstrapMutex_, portMAX_DELAY) != pdTRUE) {
+    authorized->clear();
+    physical_wifi_connect_gate.clear();
+    return std::nullopt;
+  }
   bootstrap_.sessionId = std::move(authorized->sessionId);
   bootstrap_.deviceId = std::move(authorized->deviceId);
   bootstrap_.sessionToken = std::move(authorized->sessionToken);
+  xSemaphoreGive(bootstrapMutex_);
   return nowTick + kSessionTicks;
 }
 
 QrCredentialBootstrapContext EspQrBleSessionAuthorizer::takeBootstrapContext() {
   QrCredentialBootstrapContext result;
+  if (bootstrapMutex_ == nullptr ||
+      xSemaphoreTake(bootstrapMutex_, portMAX_DELAY) != pdTRUE)
+    return result;
   result.sessionId = std::move(bootstrap_.sessionId);
   result.deviceId = std::move(bootstrap_.deviceId);
   result.sessionToken = std::move(bootstrap_.sessionToken);
   bootstrap_.clear();
+  xSemaphoreGive(bootstrapMutex_);
   return result;
+}
+
+bool EspQrBleSessionAuthorizer::bootstrapPending() const {
+  if (bootstrapMutex_ == nullptr ||
+      xSemaphoreTake(bootstrapMutex_, portMAX_DELAY) != pdTRUE)
+    return false;
+  const bool pending = bootstrap_.pending();
+  xSemaphoreGive(bootstrapMutex_);
+  return pending;
+}
+
+void EspQrBleSessionAuthorizer::clear() noexcept {
+  if (bootstrapMutex_ == nullptr ||
+      xSemaphoreTake(bootstrapMutex_, portMAX_DELAY) != pdTRUE)
+    return;
+  bootstrap_.clear();
+  xSemaphoreGive(bootstrapMutex_);
 }
 
 }  // namespace algaguard

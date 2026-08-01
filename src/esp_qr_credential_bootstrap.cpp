@@ -242,7 +242,9 @@ EspQrCredentialBootstrapTransport::issue(std::string_view bootstrapToken,
       jsonEscape(csr.binding.device_uuid) + "\",\"deviceId\":\"" +
       jsonEscape(csr.binding.device_id) +
       "\",\"purpose\":\"INITIAL\",\"rotationId\":null,\"idempotencyKey\":\"" +
-      randomUuid() + "\",\"keyAlgorithm\":\"RSA_3072\",\"csrPem\":\"" +
+      randomUuid() + "\",\"keyAlgorithm\":\"" +
+      (csr.algorithm == KeyAlgorithm::kEcP256 ? "EC_P256" : "RSA_3072") +
+      "\",\"csrPem\":\"" +
       jsonEscape(csr.pem) + "\"}";
   auto response = post(baseUrl_ + "/issue", body, bootstrapToken);
   if (!response) return std::nullopt;

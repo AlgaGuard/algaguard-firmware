@@ -76,7 +76,7 @@ class QrCredentialBootstrapCoordinator {
     context.clear();
     if (!authorization || !authorization->available())
       return QrCredentialBootstrapResult::kExchangeRejected;
-    auto key = keys_.generate(KeyAlgorithm::kRsa3072);
+    auto key = keys_.generate(KeyAlgorithm::kEcP256);
     if (!key) return QrCredentialBootstrapResult::kKeyGenerationFailed;
     const DeviceBinding binding{deviceId, authorization->deviceUuid};
     return finish(*key, std::move(*authorization), binding);

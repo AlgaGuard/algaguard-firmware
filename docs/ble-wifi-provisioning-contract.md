@@ -390,7 +390,7 @@ request may therefore authorize one connection; boot, BLE advertising, QR
 generation, and Wi-Fi station startup cannot connect automatically.
 
 After `GOT_IP`, the QR profile performs one trusted-HTTPS credential bootstrap.
-It generates an RSA-3072 key locally, submits only the public CSR, verifies the
+It generates an EC P-256 key locally, submits only the public CSR, verifies the
 returned device binding, and commits the certificate through the existing
 development credential store. Failure destroys the staged key and leaves the
 device unprovisioned. No private key, nonce, onboarding token, SSID, or password

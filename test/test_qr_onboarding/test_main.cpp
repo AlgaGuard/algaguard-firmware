@@ -47,7 +47,7 @@ class Keys final : public algaguard::LocalPrivateKeyProvider {
   bool destroyed{};
   std::optional<algaguard::PrivateKeyHandle> generate(
       algaguard::KeyAlgorithm algorithm) override {
-    generated = algorithm == algaguard::KeyAlgorithm::kRsa3072;
+    generated = algorithm == algaguard::KeyAlgorithm::kEcP256;
     return generated ? std::optional<algaguard::PrivateKeyHandle>{{1, 1}}
                      : std::nullopt;
   }
@@ -55,7 +55,7 @@ class Keys final : public algaguard::LocalPrivateKeyProvider {
       const algaguard::PrivateKeyHandle&,
       const algaguard::DeviceBinding& binding) override {
     return algaguard::CsrSubmission{"PUBLIC CSR", binding,
-                                    algaguard::KeyAlgorithm::kRsa3072};
+                                    algaguard::KeyAlgorithm::kEcP256};
   }
   bool destroy(const algaguard::PrivateKeyHandle&) override {
     destroyed = true;

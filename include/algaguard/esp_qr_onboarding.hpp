@@ -8,6 +8,9 @@
 #include <string>
 #include <utility>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 #include "algaguard/ble_provisioning_payload_validation.hpp"
 #include "algaguard/qr_onboarding.hpp"
 
@@ -31,17 +34,21 @@ class EspQrBleSessionAuthorizer final : public QrBleSessionAuthorizer {
  public:
   EspQrBleSessionAuthorizer(QrOnboardingManager& manager,
                             EspQrBindingCrypto& crypto)
-      : manager_(manager), crypto_(crypto) {}
+      : manager_(manager),
+        crypto_(crypto),
+        bootstrapMutex_(xSemaphoreCreateMutexStatic(&bootstrapMutexStorage_)) {}
   std::optional<std::uint64_t> authorize(
       const BleWifiProvisioningRequest& request,
       std::uint64_t nowTick) override;
   QrCredentialBootstrapContext takeBootstrapContext();
-  bool bootstrapPending() const { return bootstrap_.pending(); }
-  void clear() noexcept { bootstrap_.clear(); }
+  bool bootstrapPending() const;
+  void clear() noexcept;
 
  private:
   QrOnboardingManager& manager_;
   EspQrBindingCrypto& crypto_;
+  mutable StaticSemaphore_t bootstrapMutexStorage_{};
+  mutable SemaphoreHandle_t bootstrapMutex_{};
   QrCredentialBootstrapContext bootstrap_;
 };
 
