@@ -288,15 +288,26 @@ esp_err_t render_qr_code(std::string_view uri) {
   if (qrcode_initText(&code, modules.data(), 3, ECC_LOW, text.c_str()) != 0 ||
       code.size > 33) return ESP_FAIL;
   std::array<std::uint8_t, 1024> framebuffer{};
-  constexpr std::uint8_t quiet = 4;
-  const auto total = static_cast<std::uint8_t>(code.size + quiet * 2U);
+  constexpr std::uint8_t scale = 2;
+  constexpr std::uint8_t quietModules = 1;
+  const auto total =
+      static_cast<std::uint8_t>((code.size + quietModules * 2U) * scale);
+  if (total > 64) return ESP_FAIL;
   const auto originX = static_cast<std::uint8_t>((128U - total) / 2U);
   const auto originY = static_cast<std::uint8_t>((64U - total) / 2U);
-  for (std::uint8_t y = 0; y < code.size; ++y)
-    for (std::uint8_t x = 0; x < code.size; ++x)
-      if (qrcode_getModule(&code, x, y))
-        draw_pixel(framebuffer, static_cast<std::uint8_t>(originX + quiet + x),
-                   static_cast<std::uint8_t>(originY + quiet + y));
+  for (std::uint8_t y = 0; y < code.size; ++y) {
+    for (std::uint8_t x = 0; x < code.size; ++x) {
+      if (!qrcode_getModule(&code, x, y)) continue;
+      const auto baseX = static_cast<std::uint8_t>(
+          originX + (quietModules + x) * scale);
+      const auto baseY = static_cast<std::uint8_t>(
+          originY + (quietModules + y) * scale);
+      for (std::uint8_t dy = 0; dy < scale; ++dy)
+        for (std::uint8_t dx = 0; dx < scale; ++dx)
+          draw_pixel(framebuffer, static_cast<std::uint8_t>(baseX + dx),
+                     static_cast<std::uint8_t>(baseY + dy));
+    }
+  }
   return oled_framebuffer(framebuffer);
 }
 
