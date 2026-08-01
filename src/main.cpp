@@ -982,7 +982,11 @@ extern "C" void app_main() {
     ESP_LOGE(kTag, "qr_onboarding_state=QR_ERROR");
   ble_provisioning_transport.setQrSessionAuthorizer(&qr_ble_authorizer);
 #endif
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+  xTaskCreate(startup_task, "startup_state", 12288, nullptr, 8, nullptr);
+#else
   xTaskCreate(startup_task, "startup_state", 6144, nullptr, 8, nullptr);
+#endif
   xTaskCreate(input_task, "buttons", 4096, nullptr, 5, nullptr);
   xTaskCreate(sampling_task, "simulated_sampling", 4096, nullptr, 4, nullptr);
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)

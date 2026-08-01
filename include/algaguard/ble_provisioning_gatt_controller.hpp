@@ -28,6 +28,8 @@ class BleProvisioningGattController {
     validation_.setQrAuthorizer(authorizer);
   }
 
+  void setDeferredValidation(bool enabled) { deferredValidation_ = enabled; }
+
   BleProvisioningGattControllerResult onConnected(std::uint16_t connectionId) {
     if (shutdown_) return reject(BleProvisioningSafeReason::kInvalidTransition, true);
     if (connected_) return reject(BleProvisioningSafeReason::kInvalidTransition, false);
@@ -95,15 +97,19 @@ class BleProvisioningGattController {
       auto completed = transport_.takeCompletedPayload();
       if (!completed.available())
         return reject(BleProvisioningSafeReason::kInvalidTransition, false);
-      if (validation_.hasSession() || validation_.qrAuthorizerAvailable()) {
-        const auto validated = validation_.consume(std::move(completed), nowTick);
-        setStatus(validated.safeStatus, validated.safeReason, true);
-        return {validated.accepted, false, validated.secretsCleared, validated.safeStatus,
-                validated.safeReason};
-      }
       pendingPayload_ = std::move(completed);
+      if (!deferredValidation_ &&
+          (validation_.hasSession() || validation_.qrAuthorizerAvailable()))
+        return consumePendingPayload(nowTick);
     }
     return publish(result, accepted);
+  }
+
+  BleProvisioningGattControllerResult processDeferredValidation(std::uint64_t nowTick) {
+    if (!deferredValidation_ || !pendingPayload_.available() ||
+        (!validation_.hasSession() && !validation_.qrAuthorizerAvailable()))
+      return {false, true, validation_.secretsCleared(), status_, reason_};
+    return consumePendingPayload(nowTick);
   }
 
   BleProvisioningGattControllerResult onTick(std::uint64_t nowTick) {
@@ -171,6 +177,13 @@ class BleProvisioningGattController {
   bool notificationPending() const { return notificationPending_; }
 
  private:
+  BleProvisioningGattControllerResult consumePendingPayload(std::uint64_t nowTick) {
+    const auto validated = validation_.consume(std::move(pendingPayload_), nowTick);
+    setStatus(validated.safeStatus, validated.safeReason, true);
+    return {validated.accepted, false, validated.secretsCleared, validated.safeStatus,
+            validated.safeReason};
+  }
+
   void setStatus(BleProvisioningSafeStatus status, BleProvisioningSafeReason reason,
                  bool notificationPending) {
     status_ = status;
@@ -200,6 +213,7 @@ class BleProvisioningGattController {
   bool connected_{};
   bool notificationPending_{};
   bool shutdown_{};
+  bool deferredValidation_{};
 };
 
 }  // namespace algaguard

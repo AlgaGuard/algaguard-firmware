@@ -150,6 +150,7 @@ bool EspIdfBleProvisioningTransport::init() {
   }
   gTransport = this;
   ble_hs_cfg.sync_cb = on_sync;
+  controller_.setDeferredValidation(true);
   shutdown_ = false;
   initialized_ = true;
   recordAdvertisingStage(BleAdvertisingStage::kNimbleInitOk);
@@ -281,6 +282,7 @@ bool EspIdfBleProvisioningTransport::publishSafeStatus(BleProvisioningSafeStatus
 void EspIdfBleProvisioningTransport::clearPendingWrite() { writeSeam_.clear(); }
 
 void EspIdfBleProvisioningTransport::pollProvisioningTransport(std::uint64_t nowTick) {
+  (void)controller_.processDeferredValidation(nowTick);
   controller_.onTick(nowTick);
   publishPendingNotification();
 }

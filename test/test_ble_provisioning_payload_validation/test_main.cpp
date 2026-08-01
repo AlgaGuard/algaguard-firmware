@@ -190,6 +190,27 @@ void test_158_qr_bound_v2_authorizes_one_session_without_com16() {
   TEST_ASSERT_TRUE(controller.takeAcceptedWifiCredentials().available());
 }
 
+void test_159_deferred_qr_validation_keeps_completed_write_callback_bounded() {
+  const auto body = qrPayload();
+  algaguard::BleProvisioningGattController controller;
+  QrAuthorizer authorizer;
+  controller.setQrAuthorizer(&authorizer);
+  controller.setDeferredValidation(true);
+  TEST_ASSERT_TRUE(controller.onConnected(7).accepted);
+
+  send(controller, body, 115, 10);
+
+  TEST_ASSERT_EQUAL(0, authorizer.calls);
+  TEST_ASSERT_TRUE(contains(controller.readSafeStatus().view(), "COMPLETE"));
+  TEST_ASSERT_FALSE(controller.takeAcceptedWifiCredentials().available());
+
+  const auto validated = controller.processDeferredValidation(20);
+  TEST_ASSERT_TRUE(validated.accepted);
+  TEST_ASSERT_EQUAL(1, authorizer.calls);
+  TEST_ASSERT_TRUE(contains(controller.readSafeStatus().view(), "ACCEPTED"));
+  TEST_ASSERT_TRUE(controller.takeAcceptedWifiCredentials().available());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_150_valid_canonical_payload_reaches_accepted);
@@ -201,5 +222,6 @@ int main(int, char**) {
   RUN_TEST(test_156_replay_cannot_overwrite_pending_accepted_credentials);
   RUN_TEST(test_157_terminal_paths_zeroize_secret_buffers_and_safe_status);
   RUN_TEST(test_158_qr_bound_v2_authorizes_one_session_without_com16);
+  RUN_TEST(test_159_deferred_qr_validation_keeps_completed_write_callback_bounded);
   return UNITY_END();
 }
