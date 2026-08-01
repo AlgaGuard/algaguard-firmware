@@ -234,7 +234,12 @@ std::optional<PrivateKeyHandle> EspDevelopmentSoftwareKeyProvider::generate(KeyA
       ? PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1)
       : PSA_KEY_TYPE_RSA_KEY_PAIR);
   psa_set_key_bits(&attributes, ec ? kEcBits : kRsaBits);
-  psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_MESSAGE | PSA_KEY_USAGE_EXPORT);
+  // The PSA-backed Mbed TLS PK wrapper signs the already-hashed CSR body via
+  // psa_sign_hash(). Keep message signing for the runtime binding challenge,
+  // and grant hash signing explicitly for X.509 CSR generation.
+  psa_set_key_usage_flags(
+      &attributes, PSA_KEY_USAGE_SIGN_MESSAGE | PSA_KEY_USAGE_SIGN_HASH |
+                       PSA_KEY_USAGE_EXPORT);
   psa_set_key_algorithm(&attributes, ec
       ? PSA_ALG_ECDSA(PSA_ALG_SHA_256)
       : PSA_ALG_RSA_PKCS1V15_SIGN(PSA_ALG_SHA_256));
