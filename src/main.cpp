@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstdint>
@@ -74,8 +75,8 @@ algaguard::EspQrCredentialBootstrapTransport qr_credential_transport{
 algaguard::QrCredentialBootstrapCoordinator qr_credential_bootstrap{
     qr_credential_keys, qr_credential_storage, qr_credential_transport};
 enum class QrDisplayMode : std::uint8_t { kPrompt, kCode, kLocalDemo };
-QrDisplayMode qr_display_mode{QrDisplayMode::kPrompt};
-std::uint32_t qr_display_revision{};
+std::atomic<QrDisplayMode> qr_display_mode{QrDisplayMode::kPrompt};
+std::atomic<std::uint32_t> qr_display_revision{};
 #endif
 algaguard::EspIdfBleProvisioningTransport ble_provisioning_transport;
 algaguard::EspIdfWifiConnectionAdapter wifi_connection_adapter;
@@ -560,9 +561,12 @@ void render_startup_state() {
     #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
     const auto qrNow = static_cast<std::uint32_t>(xTaskGetTickCount() / configTICK_RATE_HZ);
     qr_onboarding.tick(qrNow);
-    if (qr_display_mode != QrDisplayMode::kLocalDemo) {
+    const auto display_revision =
+        qr_display_revision.load(std::memory_order_acquire);
+    const auto display_mode = qr_display_mode.load(std::memory_order_relaxed);
+    if (display_mode != QrDisplayMode::kLocalDemo) {
       const auto combinedRevision =
-          revision + qr_display_revision +
+          revision + display_revision +
           (static_cast<std::uint32_t>(qr_onboarding.state()) << 16U);
       if (combinedRevision == last_demo_revision) return;
       last_demo_revision = combinedRevision;
@@ -579,7 +583,7 @@ void render_startup_state() {
         algaguard::DiagnosticScreen error{};
         error.lines = {{"QR ERROR", "PRESS SELECT", "FOR NEW QR", "NO SECRETS"}};
         result = render_screen(error);
-      } else if (qr_display_mode == QrDisplayMode::kCode) {
+      } else if (display_mode == QrDisplayMode::kCode) {
         result = render_qr_code(qr_onboarding.uri());
       } else {
         result = render_qr_prompt();
@@ -817,6 +821,7 @@ void input_task(void*) {
             now) == algaguard::ButtonEvent::kShortPress)
 #if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
       {
+        ESP_LOGI(kTag, "BUTTON_EVENT action=UP");
         portENTER_CRITICAL(&local_demo_lock);
         local_demo_menu.previous();
         ++local_demo_revision;
@@ -831,6 +836,7 @@ void input_task(void*) {
             now) == algaguard::ButtonEvent::kShortPress)
 #if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
       {
+        ESP_LOGI(kTag, "BUTTON_EVENT action=DOWN");
         portENTER_CRITICAL(&local_demo_lock);
         local_demo_menu.next();
         ++local_demo_revision;
@@ -845,19 +851,22 @@ void input_task(void*) {
             now) == algaguard::ButtonEvent::kShortPress) {
 #if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
-      if (qr_display_mode == QrDisplayMode::kPrompt) {
-        qr_display_mode = QrDisplayMode::kCode;
-        ++qr_display_revision;
-      } else if (qr_display_mode == QrDisplayMode::kCode) {
+      ESP_LOGI(kTag, "BUTTON_EVENT action=SELECT");
+      const auto display_mode = qr_display_mode.load(std::memory_order_relaxed);
+      if (display_mode == QrDisplayMode::kPrompt) {
+        qr_display_mode.store(QrDisplayMode::kCode, std::memory_order_relaxed);
+        qr_display_revision.fetch_add(1, std::memory_order_release);
+      } else if (display_mode == QrDisplayMode::kCode) {
         const auto issued = std::max<std::uint32_t>(
             1U, static_cast<std::uint32_t>(xTaskGetTickCount() / configTICK_RATE_HZ));
         (void)qr_onboarding.generate(
             algaguard::active_firmware_config().device_id, issued);
-        ++qr_display_revision;
-      } else if (qr_display_mode == QrDisplayMode::kLocalDemo) {
+        qr_display_revision.fetch_add(1, std::memory_order_release);
+      } else if (display_mode == QrDisplayMode::kLocalDemo) {
         if (local_demo_menu.page() == algaguard::LocalDemoPage::kHome) {
-          qr_display_mode = QrDisplayMode::kPrompt;
-          ++qr_display_revision;
+          qr_display_mode.store(QrDisplayMode::kPrompt,
+                                std::memory_order_relaxed);
+          qr_display_revision.fetch_add(1, std::memory_order_release);
         } else {
           portENTER_CRITICAL(&local_demo_lock);
           local_demo_menu.select();
@@ -883,9 +892,12 @@ void input_task(void*) {
 #if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
       {
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
-        if (qr_display_mode != QrDisplayMode::kLocalDemo) {
-          qr_display_mode = QrDisplayMode::kLocalDemo;
-          ++qr_display_revision;
+        ESP_LOGI(kTag, "BUTTON_EVENT action=BACK");
+        if (qr_display_mode.load(std::memory_order_relaxed) !=
+            QrDisplayMode::kLocalDemo) {
+          qr_display_mode.store(QrDisplayMode::kLocalDemo,
+                                std::memory_order_relaxed);
+          qr_display_revision.fetch_add(1, std::memory_order_release);
         } else {
 #endif
         portENTER_CRITICAL(&local_demo_lock);
