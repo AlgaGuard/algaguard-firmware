@@ -6,10 +6,24 @@
 
 #include "algaguard/ble_wifi_provisioning.hpp"
 
+#if defined(ESP_PLATFORM)
+extern "C" {
+#include "freertos/FreeRTOS.h"
+}
+#endif
+
 namespace algaguard {
 
-inline constexpr std::uint64_t kWifiConnectTimeoutTicks = 20;
-inline constexpr std::uint64_t kWifiRetryDelayTicks = 5;
+#if defined(ESP_PLATFORM)
+inline constexpr std::uint64_t kWifiRuntimeTicksPerSecond = configTICK_RATE_HZ;
+#else
+inline constexpr std::uint64_t kWifiRuntimeTicksPerSecond = 1;
+#endif
+inline constexpr std::uint64_t kWifiConnectTimeoutTicks =
+    20 * kWifiRuntimeTicksPerSecond;
+inline constexpr std::uint64_t kWifiRetryDelayTicks =
+    5 * kWifiRuntimeTicksPerSecond;
+static_assert(kWifiRuntimeTicksPerSecond > 0);
 inline constexpr std::uint8_t kWifiMaxConnectAttempts = 3;
 
 enum class WifiConnectionState : std::uint8_t {
