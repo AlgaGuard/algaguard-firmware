@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <ctime>
 #include <cstdio>
 #include <limits>
 #include <optional>
@@ -13,15 +14,40 @@
 
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
+#include "esp_log.h"
+#include "esp_netif_sntp.h"
 #include "esp_random.h"
+#include "freertos/FreeRTOS.h"
 
 namespace algaguard {
 namespace {
 constexpr std::size_t kMaximumResponseBytes = 24U * 1024U;
+constexpr std::time_t kMinimumTrustedUnixTime = 1704067200;  // 2024-01-01 UTC
+constexpr TickType_t kClockSyncTimeout = pdMS_TO_TICKS(15000);
 
 void wipe(std::string& value) {
   std::fill(value.begin(), value.end(), '\0');
   value.clear();
+}
+
+bool ensureTrustedClock() {
+  std::time_t now{};
+  std::time(&now);
+  if (now >= kMinimumTrustedUnixTime) return true;
+
+  const esp_sntp_config_t config =
+      ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+  if (esp_netif_sntp_init(&config) != ESP_OK) {
+    ESP_LOGW("algaguard", "QR_CREDENTIAL_CLOCK_SYNC_FAILED stage=init");
+    return false;
+  }
+  const esp_err_t synchronized = esp_netif_sntp_sync_wait(kClockSyncTimeout);
+  std::time(&now);
+  esp_netif_sntp_deinit();
+  const bool ready = synchronized == ESP_OK && now >= kMinimumTrustedUnixTime;
+  if (!ready)
+    ESP_LOGW("algaguard", "QR_CREDENTIAL_CLOCK_SYNC_FAILED stage=wait");
+  return ready;
 }
 
 std::string jsonEscape(std::string_view value) {
@@ -175,6 +201,10 @@ esp_err_t onHttpEvent(esp_http_client_event_t* event) {
 
 std::optional<std::string> post(std::string_view url, std::string& body,
                                 std::string_view authorization = {}) {
+  if (!ensureTrustedClock()) {
+    wipe(body);
+    return std::nullopt;
+  }
   HttpResponse response;
   esp_http_client_config_t config{};
   const std::string stableUrl{url};

@@ -47,6 +47,20 @@ def test_aws_access_key_pattern_is_rejected():
     assert {finding.rule_id for finding in result.findings} == {"AWS_ACCESS_KEY_ID"}
 
 
+def test_qr_https_waits_for_bounded_trusted_time_before_tls():
+    source = (
+        Path(__file__).parents[1] / "src" / "esp_qr_credential_bootstrap.cpp"
+    ).read_text(encoding="utf-8")
+    assert "ESP_NETIF_SNTP_DEFAULT_CONFIG" in source
+    assert "pdMS_TO_TICKS(15000)" in source
+    assert source.index("esp_netif_sntp_sync_wait") < source.index(
+        "esp_http_client_init"
+    )
+    assert "config.crt_bundle_attach = esp_crt_bundle_attach" in source
+    assert "skip_cert_common_name_check" not in source
+    assert "cert_pem = nullptr" not in source
+
+
 def test_default_profile_rejects_insecure_warning_presence():
     with pytest.raises(ArtifactSecurityError, match="PROFILE_CHECK_REJECTED"):
         validate_profile(
