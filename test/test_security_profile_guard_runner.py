@@ -10,8 +10,8 @@ sys.modules[SPEC.name] = runner
 SPEC.loader.exec_module(runner)
 
 
-def test_all_fourteen_scenarios_are_defined():
-    assert len(runner.SCENARIOS) == 14
+def test_all_seventeen_scenarios_are_defined():
+    assert len(runner.SCENARIOS) == 17
 
 
 def test_expected_pass_cases_compile():
@@ -37,7 +37,7 @@ def test_unexpected_acceptance_is_detected():
 
 def test_report_schema_and_order_are_deterministic():
     report = runner.run_all(runner.locate_compiler())
-    assert report["schemaVersion"] == 1 and report["scenarioCount"] == 14
+    assert report["schemaVersion"] == 1 and report["scenarioCount"] == 17
     assert [item["name"] for item in report["scenarios"]] == [scenario.name for scenario in runner.SCENARIOS]
     json.dumps(report)
 
