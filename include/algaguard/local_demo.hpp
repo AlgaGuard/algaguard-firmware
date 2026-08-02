@@ -61,24 +61,62 @@ enum class LocalDemoPage : std::uint8_t {
   kLight,
   kNutrients,
   kDeviceStatus,
+  kNetwork,
   kAbout,
 };
+
+enum class LocalDemoNetworkState : std::uint8_t {
+  kReady,
+  kConfirmForget,
+  kForgotten,
+  kForgetFailed,
+};
+
+enum class LocalDemoAction : std::uint8_t { kNone, kForgetSavedWifi };
 
 class LocalDemoMenu {
  public:
   LocalDemoPage page() const { return pages_[index_]; }
-  void next() { index_ = (index_ + 1) % pages_.size(); }
-  void previous() { index_ = (index_ + pages_.size() - 1) % pages_.size(); }
-  void select() { next(); }
-  void home() { index_ = 0; }
+  void next() {
+    networkState_ = LocalDemoNetworkState::kReady;
+    index_ = (index_ + 1) % pages_.size();
+  }
+  void previous() {
+    networkState_ = LocalDemoNetworkState::kReady;
+    index_ = (index_ + pages_.size() - 1) % pages_.size();
+  }
+  LocalDemoAction select() {
+    if (page() != LocalDemoPage::kNetwork) {
+      next();
+      return LocalDemoAction::kNone;
+    }
+    if (networkState_ == LocalDemoNetworkState::kReady ||
+        networkState_ == LocalDemoNetworkState::kForgotten ||
+        networkState_ == LocalDemoNetworkState::kForgetFailed) {
+      networkState_ = LocalDemoNetworkState::kConfirmForget;
+      return LocalDemoAction::kNone;
+    }
+    return LocalDemoAction::kForgetSavedWifi;
+  }
+  void setForgetResult(bool succeeded) {
+    networkState_ = succeeded ? LocalDemoNetworkState::kForgotten
+                              : LocalDemoNetworkState::kForgetFailed;
+  }
+  void home() {
+    index_ = 0;
+    networkState_ = LocalDemoNetworkState::kReady;
+  }
   std::size_t index() const { return index_; }
+  LocalDemoNetworkState networkState() const { return networkState_; }
 
  private:
-  static constexpr std::array<LocalDemoPage, 6> pages_{
+  static constexpr std::array<LocalDemoPage, 7> pages_{
       LocalDemoPage::kHome,          LocalDemoPage::kTemperaturePh,
       LocalDemoPage::kLight,         LocalDemoPage::kNutrients,
-      LocalDemoPage::kDeviceStatus,  LocalDemoPage::kAbout};
+      LocalDemoPage::kDeviceStatus,  LocalDemoPage::kNetwork,
+      LocalDemoPage::kAbout};
   std::size_t index_{};
+  LocalDemoNetworkState networkState_{LocalDemoNetworkState::kReady};
 };
 
 inline std::string local_demo_value(const char* label, double value,
@@ -91,30 +129,49 @@ inline std::string local_demo_value(const char* label, double value,
 
 inline DiagnosticScreen local_demo_screen(LocalDemoPage page,
                                           const LocalDemoReading& reading,
-                                          bool advertisingActive) {
+                                          bool advertisingActive,
+                                          bool wifiConnected = false,
+                                          bool cloudConnected = false,
+                                          bool developmentWifiStored = false,
+                                          LocalDemoNetworkState networkState =
+                                              LocalDemoNetworkState::kReady) {
+  const char* const wifiState =
+      wifiConnected ? "WIFI CONNECTED" : "WIFI SETUP REQUIRED";
+  const char* const cloudState =
+      cloudConnected ? "CLOUD CONNECTED" : "CLOUD NOT READY";
   switch (page) {
     case LocalDemoPage::kHome:
-      return {{{"AlgaGuard", "DEMO MODE", "WIFI NOT CONFIG", "CLOUD OFFLINE"}}};
+      return {{{"AlgaGuard", "DEVICE DATA MODE", wifiState, cloudState}}};
     case LocalDemoPage::kTemperaturePh:
       return {{{"DEMO TEMP PH",
                 local_demo_value("TEMP", reading.temperatureC, 2, " C"),
-                local_demo_value("PH", reading.ph, 2), "LOCAL SIMULATION"}}};
+                local_demo_value("PH", reading.ph, 2), "DEV GENERATED"}}};
     case LocalDemoPage::kLight:
       return {{{"DEMO LIGHT",
                 local_demo_value("LIGHT", reading.lightLux, 0, " LUX"),
-                "LOCAL SIMULATION", "CLOUD OFFLINE"}}};
+                "DEV GENERATED", cloudState}}};
     case LocalDemoPage::kNutrients:
       return {{{local_demo_value("N", reading.nitrateMgL, 2, " MG L"),
                 local_demo_value("P", reading.phosphateMgL, 2, " MG L"),
                 local_demo_value("K", reading.potassiumMgL, 2, " MG L"),
-                "LOCAL SIMULATION"}}};
+                "DEV GENERATED"}}};
     case LocalDemoPage::kDeviceStatus:
       return {{{advertisingActive ? "BLE ADV ACTIVE" : "BLE ADV INIT",
-                "WIFI NOT CONFIG", "CLOUD OFFLINE", "LOCAL SIMULATION"}}};
+                wifiState, cloudState, "DEV GENERATED"}}};
+    case LocalDemoPage::kNetwork:
+      if (networkState == LocalDemoNetworkState::kConfirmForget)
+        return {{{"FORGET WIFI?", "SELECT CONFIRM", "BACK CANCEL", "NO VALUES SHOWN"}}};
+      if (networkState == LocalDemoNetworkState::kForgotten)
+        return {{{"WIFI FORGOTTEN", "RESTART SETUP", "NO VALUES SHOWN", "BACK HOME"}}};
+      if (networkState == LocalDemoNetworkState::kForgetFailed)
+        return {{{"FORGET FAILED", "WIFI UNCHANGED", "BACK CANCEL", "NO VALUES SHOWN"}}};
+      return {{{"NETWORK", wifiState,
+                developmentWifiStored ? "DEV NVS ENABLED" : "RAM ONLY",
+                "SELECT FORGET"}}};
     case LocalDemoPage::kAbout:
       return {{{"AlgaGuard", "FW 0.2.0 DEMO", "DEV BOARD", "NO SECRETS"}}};
   }
-  return {{{"AlgaGuard", "DEMO MODE", "CLOUD OFFLINE", "NO SECRETS"}}};
+  return {{{"AlgaGuard", "DEVICE DATA MODE", cloudState, "NO SECRETS"}}};
 }
 
 inline constexpr bool local_demo_never_uses_network() { return true; }

@@ -61,7 +61,11 @@ bool EspIdfWifiConnectionAdapter::init() {
 
   wifi_init_config_t initialization = WIFI_INIT_CONFIG_DEFAULT();
   if (!acceptable_init_result(esp_wifi_init(&initialization))) return false;
+#if defined(ALGAGUARD_DEVELOPMENT_WIFI_NVS_PLAINTEXT)
+  if (esp_wifi_set_storage(WIFI_STORAGE_FLASH) != ESP_OK) return false;
+#else
   if (esp_wifi_set_storage(WIFI_STORAGE_RAM) != ESP_OK) return false;
+#endif
   if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) return false;
   if (esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifiEventHandler, this,
                                           &wifiEventHandlerInstance_) != ESP_OK)
@@ -135,6 +139,18 @@ void EspIdfWifiConnectionAdapter::cancelConnect() {
 
 void EspIdfWifiConnectionAdapter::disconnect() { cancelConnect(); }
 
+bool EspIdfWifiConnectionAdapter::forgetSavedNetwork() {
+#if defined(ALGAGUARD_DEVELOPMENT_WIFI_NVS_PLAINTEXT)
+  (void)acceptable_disconnect_result(esp_wifi_disconnect());
+  connectionInProgress_ = false;
+  if (esp_wifi_restore() != ESP_OK) return false;
+  if (esp_wifi_set_storage(WIFI_STORAGE_FLASH) != ESP_OK) return false;
+  return esp_wifi_set_mode(WIFI_MODE_STA) == ESP_OK;
+#else
+  return false;
+#endif
+}
+
 void EspIdfWifiConnectionAdapter::clearSensitiveDriverInput() {
   // Credentials exist only in beginConnect's stack-local wifi_config_t.
 }
@@ -155,6 +171,15 @@ void EspIdfWifiConnectionAdapter::onWifiEvent(std::int32_t eventId, void* eventD
   if (runtime_ == nullptr) return;
   const auto nowTick = static_cast<std::uint64_t>(xTaskGetTickCount());
   if (eventId == WIFI_EVENT_STA_START) {
+#if defined(ALGAGUARD_DEVELOPMENT_WIFI_NVS_PLAINTEXT)
+    // ESP-IDF restores the station profile from its NVS Wi-Fi storage. This is
+    // intentionally compiled only for the guarded development compatibility
+    // mode; release firmware must not auto-connect from direct NVS storage.
+    if (esp_wifi_connect() == ESP_OK) {
+      connectionInProgress_ = true;
+      (void)runtime_->restoreSavedNetworkStarted(nowTick);
+    }
+#endif
     (void)runtime_->onWifiEvent(WifiRuntimeWifiEvent::kStationStarted,
                                 WifiDisconnectClassification::kTransientFailure, nowTick);
   } else if (eventId == WIFI_EVENT_STA_CONNECTED) {

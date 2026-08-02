@@ -315,6 +315,7 @@ void EspDeviceTelemetryRuntime::poll(const LocalDemoReading& reading,
 bool EspDeviceTelemetryRuntime::connected() const {
   return impl_->connected.load(std::memory_order_acquire);
 }
+bool EspDeviceTelemetryRuntime::started() const { return impl_->client != nullptr; }
 bool EspDeviceTelemetryRuntime::profileInstalled() const {
   return impl_->profileInstalled.load(std::memory_order_acquire);
 }

@@ -33,10 +33,10 @@ void test_local_demo_menu_wraps_and_home_is_safe() {
   algaguard::LocalDemoMenu menu;
   TEST_ASSERT_EQUAL(0, menu.index());
   menu.previous();
-  TEST_ASSERT_EQUAL(5, menu.index());
+  TEST_ASSERT_EQUAL(6, menu.index());
   menu.next();
   TEST_ASSERT_EQUAL(0, menu.index());
-  menu.select();
+  TEST_ASSERT_EQUAL(algaguard::LocalDemoAction::kNone, menu.select());
   TEST_ASSERT_EQUAL(1, menu.index());
   menu.home();
   TEST_ASSERT_EQUAL(0, menu.index());
@@ -48,13 +48,13 @@ void test_local_demo_all_pages_are_safe_and_explicit() {
   bool sawLocal = false;
   bool sawOffline = false;
   bool sawNotConfigured = false;
-  for (unsigned page = 0; page < 6; ++page) {
+  for (unsigned page = 0; page < 7; ++page) {
     const auto screen = algaguard::local_demo_screen(menu.page(), reading, true);
     TEST_ASSERT_TRUE(screen.safe());
     for (const auto& line : screen.lines) {
-      sawLocal = sawLocal || line.find("LOCAL SIMULATION") != std::string::npos;
-      sawOffline = sawOffline || line.find("CLOUD OFFLINE") != std::string::npos;
-      sawNotConfigured = sawNotConfigured || line.find("WIFI NOT CONFIG") != std::string::npos;
+      sawLocal = sawLocal || line.find("DEV GENERATED") != std::string::npos;
+      sawOffline = sawOffline || line.find("CLOUD NOT READY") != std::string::npos;
+      sawNotConfigured = sawNotConfigured || line.find("WIFI SETUP REQUIRED") != std::string::npos;
       TEST_ASSERT_EQUAL(std::string::npos, line.find("password"));
       TEST_ASSERT_EQUAL(std::string::npos, line.find("session"));
     }
@@ -65,11 +65,33 @@ void test_local_demo_all_pages_are_safe_and_explicit() {
   TEST_ASSERT_TRUE(sawNotConfigured);
 }
 
+void test_local_demo_network_forget_requires_confirmation() {
+  algaguard::LocalDemoMenu menu;
+  for (unsigned page = 0; page < 5; ++page) menu.next();
+  TEST_ASSERT_EQUAL(algaguard::LocalDemoPage::kNetwork, menu.page());
+  TEST_ASSERT_EQUAL(algaguard::LocalDemoAction::kNone, menu.select());
+  TEST_ASSERT_EQUAL(algaguard::LocalDemoNetworkState::kConfirmForget,
+                    menu.networkState());
+  TEST_ASSERT_EQUAL(algaguard::LocalDemoAction::kForgetSavedWifi,
+                    menu.select());
+  menu.setForgetResult(true);
+  TEST_ASSERT_EQUAL(algaguard::LocalDemoNetworkState::kForgotten,
+                    menu.networkState());
+  const auto screen = algaguard::local_demo_screen(
+      menu.page(), algaguard::LocalDemoGenerator{}.next(1), true, false,
+      false, true, menu.networkState());
+  TEST_ASSERT_TRUE(screen.safe());
+  TEST_ASSERT_EQUAL(std::string::npos, screen.lines[0].find("password"));
+  menu.home();
+  TEST_ASSERT_EQUAL(algaguard::LocalDemoPage::kHome, menu.page());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_local_demo_guard_model);
   RUN_TEST(test_local_demo_generator_is_deterministic_and_bounded);
   RUN_TEST(test_local_demo_menu_wraps_and_home_is_safe);
   RUN_TEST(test_local_demo_all_pages_are_safe_and_explicit);
+  RUN_TEST(test_local_demo_network_forget_requires_confirmation);
   return UNITY_END();
 }

@@ -31,6 +31,7 @@ enum class WifiConnectionState : std::uint8_t {
   kCredentialsReady,
   kConnecting,
   kRetryWait,
+  kRestoringSavedNetwork,
   kConnected,
   kAuthFailed,
   kNetworkNotFound,
@@ -111,9 +112,22 @@ class WifiConnectionStateMachine {
     return beginAttempt(nowTick);
   }
 
+  WifiConnectionResult restoreSavedNetworkStarted(std::uint64_t nowTick) {
+    if (state_ != WifiConnectionState::kIdle &&
+        state_ != WifiConnectionState::kCleared &&
+        state_ != WifiConnectionState::kDisconnected)
+      return result(WifiConnectionReason::kInvalidTransition, false);
+    attemptNumber_ = 1;
+    attemptStartedTick_ = nowTick;
+    nextRetryTick_ = 0;
+    state_ = WifiConnectionState::kRestoringSavedNetwork;
+    return result(WifiConnectionReason::kConnectInProgress, false);
+  }
+
   WifiConnectionResult onDriverEvent(WifiDriverEvent event, std::uint64_t nowTick) {
     if (event == WifiDriverEvent::kConnected) {
-      if (state_ != WifiConnectionState::kConnecting)
+      if (state_ != WifiConnectionState::kConnecting &&
+          state_ != WifiConnectionState::kRestoringSavedNetwork)
         return result(WifiConnectionReason::kInvalidTransition, false);
       adapter_.clearSensitiveDriverInput();
       credentials_.clear();
@@ -127,6 +141,11 @@ class WifiConnectionStateMachine {
     }
     if (event == WifiDriverEvent::kCancelled) return cancel();
     if (event == WifiDriverEvent::kDisconnected) {
+      if (state_ == WifiConnectionState::kRestoringSavedNetwork) {
+        adapter_.clearSensitiveDriverInput();
+        state_ = WifiConnectionState::kDisconnected;
+        return result(WifiConnectionReason::kDisconnected, false);
+      }
       if (state_ == WifiConnectionState::kConnected) {
         adapter_.disconnect();
         adapter_.clearSensitiveDriverInput();
@@ -153,6 +172,14 @@ class WifiConnectionStateMachine {
   }
 
   WifiConnectionResult onTick(std::uint64_t nowTick) {
+    if (state_ == WifiConnectionState::kRestoringSavedNetwork &&
+        nowTick >= attemptStartedTick_ &&
+        nowTick - attemptStartedTick_ >= kWifiConnectTimeoutTicks) {
+      adapter_.disconnect();
+      adapter_.clearSensitiveDriverInput();
+      state_ = WifiConnectionState::kTimedOut;
+      return result(WifiConnectionReason::kConnectTimeout, false);
+    }
     if (state_ == WifiConnectionState::kConnecting && nowTick >= attemptStartedTick_ &&
         nowTick - attemptStartedTick_ >= kWifiConnectTimeoutTicks)
       return retryOrTerminal(WifiConnectionReason::kConnectTimeout, nowTick,

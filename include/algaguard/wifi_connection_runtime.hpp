@@ -54,6 +54,9 @@ class WifiConnectionRuntime {
   }
 
   WifiConnectionResult startConnection(std::uint64_t nowTick) { return manager_.start(nowTick); }
+  WifiConnectionResult restoreSavedNetworkStarted(std::uint64_t nowTick) {
+    return manager_.restoreSavedNetworkStarted(nowTick);
+  }
   WifiConnectionResult poll(std::uint64_t nowTick) { return manager_.onTick(nowTick); }
 
   WifiConnectionResult onWifiEvent(WifiRuntimeWifiEvent event,

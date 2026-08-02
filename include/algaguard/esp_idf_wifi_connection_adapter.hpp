@@ -22,6 +22,9 @@ class EspIdfWifiConnectionAdapter final : public WifiConnectionAdapter {
   bool start();
   void stop();
   void shutdown();
+  // Development-only: clears ESP-IDF's station configuration before the next
+  // QR provisioning flow. It never exposes SSID or password bytes.
+  bool forgetSavedNetwork();
   void setRuntime(WifiConnectionRuntime* runtime) { runtime_ = runtime; }
 
   bool beginConnect(std::string_view ssid, std::string_view password) override;

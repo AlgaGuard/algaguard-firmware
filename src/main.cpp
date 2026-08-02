@@ -1,5 +1,6 @@
 #include "algaguard/config.hpp"
 #include "algaguard/ble_provisioning_transport.hpp"
+#include "algaguard/brand_splash.hpp"
 #include "algaguard/esp_idf_wifi_connection_adapter.hpp"
 #include "algaguard/credentials.hpp"
 #include "algaguard/display.hpp"
@@ -45,6 +46,13 @@ constexpr char kTag[] = "algaguard";
 constexpr std::uint32_t kExpectedFlashBytes = 16U * 1024U * 1024U;
 constexpr std::uint32_t kExpectedPsramBytes = 8U * 1024U * 1024U;
 constexpr algaguard::CredentialLimits credential_limits{};
+#if defined(ALGAGUARD_DEVELOPMENT_WIFI_NVS_PLAINTEXT)
+constexpr char kWifiPersistenceLog[] = "development-nvs-plaintext";
+constexpr char kWifiPersistenceBool[] = "true";
+#else
+constexpr char kWifiPersistenceLog[] = "disabled";
+constexpr char kWifiPersistenceBool[] = "false";
+#endif
 
 algaguard::DeterministicSimulator simulator{0xA16A6A4DU};
 algaguard::LocalQueue<algaguard::SimulatedSample> queue{120};
@@ -118,6 +126,7 @@ i2c_master_bus_handle_t oled_bus{};
 i2c_master_dev_handle_t oled_device{};
 std::uint8_t oled_active_address{algaguard::hardware::kOledAddress};
 bool oled_address_detected{};
+TickType_t oled_splash_until_tick{};
 
 esp_err_t oled_command(std::uint8_t command) {
   const std::array<std::uint8_t, 2> payload{0x00, command};
@@ -193,11 +202,19 @@ void draw_text(std::array<std::uint8_t, 1024>& framebuffer,
   }
 }
 
+void draw_text_scaled(std::array<std::uint8_t, 1024>& framebuffer,
+                      std::string_view text, std::uint8_t origin_x,
+                      std::uint8_t origin_y, std::uint8_t scale);
+
 esp_err_t render_screen(const algaguard::DiagnosticScreen& screen) {
   std::array<std::uint8_t, 1024> framebuffer{};
-  for (std::uint8_t index = 0; index < screen.lines.size(); ++index)
+  if (screen.lines[0].size() <= 10)
+    draw_text_scaled(framebuffer, screen.lines[0], 0, 0, 2);
+  else
+    draw_text(framebuffer, screen.lines[0], 0, 2);
+  for (std::uint8_t index = 1; index < screen.lines.size(); ++index)
     draw_text(framebuffer, screen.lines[index], 0,
-              static_cast<std::uint8_t>(index * 8U));
+              static_cast<std::uint8_t>(16U + (index - 1U) * 16U));
   return oled_framebuffer(framebuffer);
 }
 
@@ -277,6 +294,53 @@ esp_err_t configure_oled_i2c() {
   return ESP_OK;
 }
 
+void draw_text_scaled(std::array<std::uint8_t, 1024>& framebuffer,
+                      std::string_view text, std::uint8_t origin_x,
+                      std::uint8_t origin_y, std::uint8_t scale) {
+  std::uint8_t x = origin_x;
+  for (const char character : text) {
+    const auto rows = glyph(character);
+    for (std::uint8_t row = 0; row < rows.size(); ++row)
+      for (std::uint8_t column = 0; column < 3; ++column) {
+        if ((rows[row] & (1U << (2U - column))) == 0) continue;
+        for (std::uint8_t dy = 0; dy < scale; ++dy)
+          for (std::uint8_t dx = 0; dx < scale; ++dx) {
+            const auto px = static_cast<std::uint8_t>(x + column * scale + dx);
+            const auto py = static_cast<std::uint8_t>(origin_y + row * scale + dy);
+            if (px < 128 && py < 64)
+              framebuffer[(py / 8U) * 128U + px] |=
+                  static_cast<std::uint8_t>(1U << (py % 8U));
+          }
+      }
+    x = static_cast<std::uint8_t>(x + 4U * scale);
+    if (x >= 128) break;
+  }
+}
+
+void draw_brand_logo(std::array<std::uint8_t, 1024>& framebuffer,
+                     std::uint8_t origin_x, std::uint8_t origin_y) {
+  for (std::uint8_t y = 0; y < algaguard::brand::kLogoHeight; ++y)
+    for (std::uint8_t x = 0; x < algaguard::brand::kLogoWidth; ++x) {
+      const auto byte = algaguard::brand::kLogoMask[
+          static_cast<std::size_t>(y) * algaguard::brand::kLogoStride + x / 8U];
+      if ((byte & (1U << (7U - x % 8U))) == 0) continue;
+      const auto px = static_cast<std::uint8_t>(origin_x + x);
+      const auto py = static_cast<std::uint8_t>(origin_y + y);
+      if (px < 128 && py < 64)
+        framebuffer[(py / 8U) * 128U + px] |=
+            static_cast<std::uint8_t>(1U << (py % 8U));
+    }
+}
+
+esp_err_t render_brand_splash() {
+  std::array<std::uint8_t, 1024> framebuffer{};
+  draw_brand_logo(framebuffer, 6, 10);
+  draw_text_scaled(framebuffer, "ALGA", 50, 12, 2);
+  draw_text_scaled(framebuffer, "GUARD", 50, 28, 2);
+  draw_text(framebuffer, "TANK MONITOR", 50, 48);
+  return oled_framebuffer(framebuffer);
+}
+
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
 void draw_pixel(std::array<std::uint8_t, 1024>& framebuffer,
                 std::uint8_t x, std::uint8_t y) {
@@ -337,6 +401,7 @@ algaguard::PhysicalTestState current_physical_test_state(
   switch (wifi_connection_runtime.state()) {
     case algaguard::WifiConnectionState::kConnecting:
     case algaguard::WifiConnectionState::kRetryWait:
+    case algaguard::WifiConnectionState::kRestoringSavedNetwork:
       return algaguard::PhysicalTestState::kWifiConnecting;
     case algaguard::WifiConnectionState::kConnected:
       return algaguard::PhysicalTestState::kWifiConnected;
@@ -431,7 +496,9 @@ class EspFoundationServices final : public algaguard::StartupServices {
 #endif
 #if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS) && !defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
     initialize_physical_session_console();
-    ESP_LOGI(kTag, "LOCAL_DEMO_RUNTIME_READY wifi=NOT_CONFIGURED cloud=OFFLINE persistence=false");
+    ESP_LOGI(kTag,
+             "LOCAL_DEMO_RUNTIME_READY wifi=NOT_CONFIGURED cloud=OFFLINE persistence=%s",
+             kWifiPersistenceLog);
     return {algaguard::OperationStatus::kSuccess};
 #else
     wifi_connection_adapter.setRuntime(&wifi_connection_runtime);
@@ -440,7 +507,8 @@ class EspFoundationServices final : public algaguard::StartupServices {
               algaguard::StartupReason::kModuleUnavailable};
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
     initialize_physical_session_console();
-    ESP_LOGI(kTag, "WIFI_RUNTIME_READY_NOT_CONNECTED persistence=false");
+    ESP_LOGI(kTag, "WIFI_RUNTIME_READY_NOT_CONNECTED persistence=%s",
+             kWifiPersistenceLog);
     ESP_LOGI(kTag, "%s", algaguard::physical_wifi_gate_state_code(
                  algaguard::physical_wifi_connect_gate.state()).data());
     ESP_LOGI(kTag, "%s", algaguard::physical_session_state_code(physical_session_installer.state()).data());
@@ -454,6 +522,10 @@ class EspFoundationServices final : public algaguard::StartupServices {
     if (!board_.oled_initialized)
       return {algaguard::OperationStatus::kRecoverableFailure,
               algaguard::StartupReason::kModuleUnavailable};
+    if (render_brand_splash() != ESP_OK)
+      return {algaguard::OperationStatus::kRecoverableFailure,
+              algaguard::StartupReason::kModuleUnavailable};
+    oled_splash_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(900);
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
     const auto preflight = algaguard::physical_board_preflight(
         {board_.chip_is_esp32s3, board_.flash_bytes, board_.psram_available,
@@ -465,9 +537,7 @@ class EspFoundationServices final : public algaguard::StartupServices {
         algaguard::physical_test_screen(algaguard::PhysicalTestState::kBleAdvertisingInitializing);
     ESP_LOGW(kTag, "INSECURE DEVELOPMENT PHYSICAL TEST MODE preflight=%u",
              static_cast<unsigned>(preflight.reason));
-    if (render_screen(screen) != ESP_OK)
-      return {algaguard::OperationStatus::kRecoverableFailure,
-              algaguard::StartupReason::kModuleUnavailable};
+    (void)screen;
     return {algaguard::OperationStatus::kSuccess};
 #else
     const auto boot =
@@ -478,9 +548,7 @@ class EspFoundationServices final : public algaguard::StartupServices {
     screen.lines[3] = "DEV SOFTWARE KEY";
     ESP_LOGW(kTag, "security_profile=DEV_SOFTWARE_KEY warning=SOFTWARE_PRIVATE_KEY_IN_USE");
 #endif
-    if (render_screen(screen) != ESP_OK)
-      return {algaguard::OperationStatus::kRecoverableFailure,
-              algaguard::StartupReason::kModuleUnavailable};
+    (void)screen;
     return {algaguard::OperationStatus::kSuccess};
 #endif
   }
@@ -547,6 +615,8 @@ EspFoundationServices services{board_profile};
 algaguard::StartupStateMachine startup{services};
 
 void render_startup_state() {
+  if (static_cast<std::int32_t>(xTaskGetTickCount() - oled_splash_until_tick) < 0)
+    return;
   static auto last_state = static_cast<algaguard::StartupState>(255);
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
   static auto last_physical_state = static_cast<algaguard::PhysicalTestState>(255);
@@ -596,10 +666,29 @@ void render_startup_state() {
       return;
     }
     #endif
-    if (revision == last_demo_revision) return;
-    last_demo_revision = revision;
+    const bool wifi_connected =
+        wifi_connection_runtime.state() == algaguard::WifiConnectionState::kConnected;
+    bool cloud_connected = false;
+    #if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
+    cloud_connected = device_telemetry_runtime.connected();
+    #endif
+    const auto visible_revision = revision + (wifi_connected ? 0x20000000U : 0U) +
+                                  (cloud_connected ? 0x40000000U : 0U);
+    if (visible_revision == last_demo_revision) return;
+    last_demo_revision = visible_revision;
     const bool advertising = ble_provisioning_transport.advertisingRuntimeStatus().advertisingActive;
-    const auto visible_screen = algaguard::local_demo_screen(page, reading, advertising);
+    algaguard::LocalDemoNetworkState network_state{};
+    portENTER_CRITICAL(&local_demo_lock);
+    network_state = local_demo_menu.networkState();
+    portEXIT_CRITICAL(&local_demo_lock);
+#if defined(ALGAGUARD_DEVELOPMENT_WIFI_NVS_PLAINTEXT)
+    constexpr bool development_wifi_stored = true;
+#else
+    constexpr bool development_wifi_stored = false;
+#endif
+    const auto visible_screen = algaguard::local_demo_screen(
+        page, reading, advertising, wifi_connected, cloud_connected,
+        development_wifi_stored, network_state);
     if (render_screen(visible_screen) != ESP_OK)
       ESP_LOGE(kTag, "display_update_failed mode=LOCAL_DEMO");
     return;
@@ -657,7 +746,9 @@ void poll_physical_session_console() {
       static_cast<std::size_t>(count), static_cast<std::uint64_t>(xTaskGetTickCount()),
       physical_runtime_bridge.handoffInstalled(),
       wifi_connection_runtime.state() == algaguard::WifiConnectionState::kConnecting ||
-          wifi_connection_runtime.state() == algaguard::WifiConnectionState::kRetryWait);
+          wifi_connection_runtime.state() == algaguard::WifiConnectionState::kRetryWait ||
+          wifi_connection_runtime.state() ==
+              algaguard::WifiConnectionState::kRestoringSavedNetwork);
   if (!physical_session_protocol.awaitingFrame()) {
     const auto code = algaguard::physical_session_ack_code(acknowledgement);
     if (acknowledgement == algaguard::PhysicalSessionControlAck::kOledAddressQuery) {
@@ -677,21 +768,24 @@ void poll_physical_session_console() {
         algaguard::physical_wifi_connect_gate.state());
     const auto connectionActive =
         wifi_connection_runtime.state() == algaguard::WifiConnectionState::kConnecting ||
-        wifi_connection_runtime.state() == algaguard::WifiConnectionState::kRetryWait;
+        wifi_connection_runtime.state() == algaguard::WifiConnectionState::kRetryWait ||
+        wifi_connection_runtime.state() ==
+            algaguard::WifiConnectionState::kRestoringSavedNetwork;
     if (safe_state_query) {
       char state[260]{};
       const auto written = std::snprintf(
           state, sizeof(state),
           "SAFE_SESSION_STATE gate=%.*s activeSessionPresent=%s handoffPresent=%s "
           "wifiRuntimeReady=true connectAttemptActive=%s credentialsPresent=%s "
-          "secretsCleared=%s persistence=false\n",
+          "secretsCleared=%s persistence=%s\n",
           static_cast<int>(gate.size()), gate.data(),
           physical_session_installer.armed() ? "true" : "false",
           physical_runtime_bridge.handoffInstalled() ? "true" : "false",
           connectionActive ? "true" : "false",
           wifi_connection_runtime.credentialsPresent() ? "true" : "false",
           physical_session_installer.secretsCleared() && wifi_connection_runtime.secretsCleared()
-              ? "true" : "false");
+              ? "true" : "false",
+          kWifiPersistenceBool);
       if (written > 0 && static_cast<std::size_t>(written) < sizeof(state))
         (void)uart_write_bytes(UART_NUM_0, state, static_cast<std::size_t>(written));
     }
@@ -729,16 +823,18 @@ void startup_task(void*) {
     const auto wifi_state = wifi_connection_runtime.state();
     if (wifi_state != last_wifi_state) {
       if (wifi_state == algaguard::WifiConnectionState::kConnecting)
-        ESP_LOGI(kTag, "WIFI_CONNECTING credentialsPresent=true persistence=false");
+        ESP_LOGI(kTag, "WIFI_CONNECTING credentialsPresent=true persistence=%s",
+                 kWifiPersistenceLog);
       else if (wifi_state == algaguard::WifiConnectionState::kConnected)
         ESP_LOGI(kTag, "GOT_IP WIFI_CONNECTED credentialsPresent=false secretsCleared=true "
-                       "persistence=false");
+                       "persistence=%s", kWifiPersistenceLog);
       else
         ESP_LOGI(kTag, "WIFI_SAFE_STATE state=%u credentialsPresent=%s secretsCleared=%s "
-                       "persistence=false",
+                       "persistence=%s",
                  static_cast<unsigned>(wifi_state),
                  wifi_connection_runtime.credentialsPresent() ? "true" : "false",
-                 wifi_connection_runtime.secretsCleared() ? "true" : "false");
+                 wifi_connection_runtime.secretsCleared() ? "true" : "false",
+                 kWifiPersistenceLog);
       last_wifi_state = wifi_state;
     }
     const auto advertising = ble_provisioning_transport.advertisingRuntimeStatus();
@@ -877,17 +973,37 @@ void input_task(void*) {
                                 std::memory_order_relaxed);
           qr_display_revision.fetch_add(1, std::memory_order_release);
         } else {
+          algaguard::LocalDemoAction action{};
           portENTER_CRITICAL(&local_demo_lock);
-          local_demo_menu.select();
+          action = local_demo_menu.select();
           ++local_demo_revision;
           portEXIT_CRITICAL(&local_demo_lock);
+          if (action == algaguard::LocalDemoAction::kForgetSavedWifi) {
+            const bool forgotten = wifi_connection_adapter.forgetSavedNetwork();
+            (void)wifi_connection_runtime.reset();
+            portENTER_CRITICAL(&local_demo_lock);
+            local_demo_menu.setForgetResult(forgotten);
+            ++local_demo_revision;
+            portEXIT_CRITICAL(&local_demo_lock);
+            ESP_LOGI(kTag, "WIFI_FORGET_RESULT success=%s credentialsShown=false",
+                     forgotten ? "true" : "false");
+          }
         }
       }
 #else
+      algaguard::LocalDemoAction action{};
       portENTER_CRITICAL(&local_demo_lock);
-      local_demo_menu.select();
+      action = local_demo_menu.select();
       ++local_demo_revision;
       portEXIT_CRITICAL(&local_demo_lock);
+      if (action == algaguard::LocalDemoAction::kForgetSavedWifi) {
+        const bool forgotten = wifi_connection_adapter.forgetSavedNetwork();
+        (void)wifi_connection_runtime.reset();
+        portENTER_CRITICAL(&local_demo_lock);
+        local_demo_menu.setForgetResult(forgotten);
+        ++local_demo_revision;
+        portEXIT_CRITICAL(&local_demo_lock);
+      }
 #endif
 #else
       menu.select();
@@ -926,41 +1042,61 @@ void input_task(void*) {
 
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
 void credential_bootstrap_task(void*) {
+  bool restoredIdentityChecked = false;
   while (true) {
     if (wifi_connection_runtime.state() !=
-            algaguard::WifiConnectionState::kConnected ||
-        !qr_ble_authorizer.bootstrapPending()) {
+        algaguard::WifiConnectionState::kConnected) {
+      restoredIdentityChecked = false;
       vTaskDelay(pdMS_TO_TICKS(200));
       continue;
     }
-    const auto result = qr_credential_bootstrap.run(
-        qr_ble_authorizer.takeBootstrapContext());
-    if (result == algaguard::QrCredentialBootstrapResult::kSuccess) {
+    if (qr_ble_authorizer.bootstrapPending()) {
+      const auto result = qr_credential_bootstrap.run(
+          qr_ble_authorizer.takeBootstrapContext());
+      if (result == algaguard::QrCredentialBootstrapResult::kSuccess) {
 #if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
-      const auto identity = qr_credential_storage.software_tls_identity();
-      const auto broker = qr_credential_bootstrap.broker_endpoint();
-      const bool mqttStarted = identity && broker &&
-          device_telemetry_runtime.start(
-              std::string{algaguard::active_firmware_config().device_id},
-              *broker, *identity);
+        const auto identity = qr_credential_storage.software_tls_identity();
+        const auto broker = qr_credential_bootstrap.broker_endpoint();
+        const bool mqttStarted = identity && broker &&
+            device_telemetry_runtime.start(
+                std::string{algaguard::active_firmware_config().device_id},
+                *broker, *identity);
 #else
-      constexpr bool mqttStarted = false;
+        constexpr bool mqttStarted = false;
 #endif
-      ESP_LOGI(kTag,
-               "QR_CREDENTIAL_BOOTSTRAP_ACTIVE privateKeyExported=false "
-               "sessionCleared=true persistence=development-credential-only "
-               "mqttStarted=%s", mqttStarted ? "true" : "false");
-      if (!mqttStarted)
+        ESP_LOGI(kTag,
+                 "QR_CREDENTIAL_BOOTSTRAP_ACTIVE privateKeyExported=false "
+                 "sessionCleared=true persistence=development-credential-only "
+                 "mqttStarted=%s", mqttStarted ? "true" : "false");
+        if (!mqttStarted)
+          ESP_LOGE(kTag,
+                   "DEVICE_MQTT_START_FAILED privateKeyExported=false "
+                   "credentialsPersisted=development-only");
+      } else {
         ESP_LOGE(kTag,
-                 "DEVICE_MQTT_START_FAILED privateKeyExported=false "
-                 "credentialsPersisted=development-only");
-    } else {
-      ESP_LOGE(kTag,
-               "QR_CREDENTIAL_BOOTSTRAP_FAILED category=%u "
-               "privateKeyExported=false sessionCleared=true",
-               static_cast<unsigned>(result));
+                 "QR_CREDENTIAL_BOOTSTRAP_FAILED category=%u "
+                 "privateKeyExported=false sessionCleared=true",
+                 static_cast<unsigned>(result));
+      }
+      restoredIdentityChecked = true;
     }
-    vTaskDelete(nullptr);
+#if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
+    if (!device_telemetry_runtime.started() && !restoredIdentityChecked) {
+      restoredIdentityChecked = true;
+      const auto identity = qr_credential_storage.software_tls_identity();
+      const auto& config = algaguard::active_firmware_config();
+      const algaguard::BrokerEndpoint broker{
+          std::string{config.mqtt_host}, config.mqtt_tls_port,
+          std::string{config.mqtt_host}, 60, 3600};
+      const bool mqttStarted = identity && device_telemetry_runtime.start(
+          std::string{config.device_id}, broker, *identity);
+      ESP_LOGI(kTag,
+               "RESTORED_DEVICE_CLOUD_START attempted=true identityPresent=%s "
+               "mqttStarted=%s privateKeyExported=false",
+               identity ? "true" : "false", mqttStarted ? "true" : "false");
+    }
+#endif
+    vTaskDelay(pdMS_TO_TICKS(500));
   }
 }
 #endif

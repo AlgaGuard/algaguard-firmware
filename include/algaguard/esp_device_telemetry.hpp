@@ -22,6 +22,7 @@ class EspDeviceTelemetryRuntime {
   bool start(std::string deviceId, BrokerEndpoint endpoint,
              SoftwareTlsIdentity identity);
   void poll(const LocalDemoReading& reading, std::uint64_t uptimeMs);
+  bool started() const;
   bool connected() const;
   bool profileInstalled() const;
 

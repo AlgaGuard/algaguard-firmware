@@ -169,6 +169,19 @@ void test_171_cancel_reset_shutdown_are_idempotent_and_keep_diagnostics_safe() {
   TEST_ASSERT_TRUE(adapter.clearSensitiveCalls >= 3);
 }
 
+void test_172_saved_network_restore_reaches_connected_without_ram_credentials() {
+  FakeWifiConnectionAdapter adapter;
+  algaguard::WifiConnectionRuntime runtime{adapter};
+  auto result = runtime.restoreSavedNetworkStarted(10);
+  TEST_ASSERT_EQUAL(algaguard::WifiConnectionState::kRestoringSavedNetwork,
+                    result.state);
+  TEST_ASSERT_FALSE(result.credentialsPresent);
+  result = runtime.onIpEvent(algaguard::WifiRuntimeIpEvent::kGotIp, 11);
+  TEST_ASSERT_EQUAL(algaguard::WifiConnectionState::kConnected, result.state);
+  TEST_ASSERT_TRUE(result.secretsCleared);
+  TEST_ASSERT_EQUAL_UINT32(0, adapter.beginCalls);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_166_runtime_passes_accepted_credentials_once_without_fake_text_retention);
@@ -177,5 +190,6 @@ int main(int, char**) {
   RUN_TEST(test_169_transient_and_unknown_disconnects_follow_bounded_host_retry_policy);
   RUN_TEST(test_170_got_ip_is_connected_success_and_clears_host_credentials);
   RUN_TEST(test_171_cancel_reset_shutdown_are_idempotent_and_keep_diagnostics_safe);
+  RUN_TEST(test_172_saved_network_restore_reaches_connected_without_ram_credentials);
   return UNITY_END();
 }

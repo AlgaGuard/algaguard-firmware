@@ -3,7 +3,7 @@
   "authoritativeGuardHeader": "include/algaguard/security_profile_guards.hpp",
   "probeSource": "test/guard_probe/security_profile_guard_probe.cpp",
   "compilerIdentity": "g++.EXE (Rev2, Built by MSYS2 project) 14.2.0",
-  "scenarioCount": 9,
+  "scenarioCount": 17,
   "scenarios": [
     {
       "name": "default-development",
@@ -78,6 +78,33 @@
       "matchedGuardIdentifier": ""
     },
     {
+      "name": "development-plaintext-wifi-nvs",
+      "expected": "PASS",
+      "actual": "PASS",
+      "classification": "GUARD_PASS",
+      "exitCode": 0,
+      "expectedGuardIdentifier": "",
+      "matchedGuardIdentifier": ""
+    },
+    {
+      "name": "production-with-plaintext-wifi-nvs",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "classification": "EXPECTED_GUARD_REJECTION",
+      "exitCode": 1,
+      "expectedGuardIdentifier": "ALGAGUARD_GUARD_PLAINTEXT_WIFI_NVS_DEVELOPMENT_ONLY",
+      "matchedGuardIdentifier": "ALGAGUARD_GUARD_PLAINTEXT_WIFI_NVS_DEVELOPMENT_ONLY"
+    },
+    {
+      "name": "conflicting-wifi-storage-modes",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "classification": "EXPECTED_GUARD_REJECTION",
+      "exitCode": 1,
+      "expectedGuardIdentifier": "ALGAGUARD_GUARD_WIFI_STORAGE_MODES_MUTUALLY_EXCLUSIVE",
+      "matchedGuardIdentifier": "ALGAGUARD_GUARD_WIFI_STORAGE_MODES_MUTUALLY_EXCLUSIVE"
+    },
+    {
       "name": "production-with-physical-test",
       "expected": "FAIL",
       "actual": "FAIL",
@@ -85,6 +112,51 @@
       "exitCode": 1,
       "expectedGuardIdentifier": "ALGAGUARD_GUARD_PRODUCTION_FORBIDS_PHYSICAL_TEST",
       "matchedGuardIdentifier": "ALGAGUARD_GUARD_PRODUCTION_FORBIDS_PHYSICAL_TEST"
+    },
+    {
+      "name": "local-oled-demo-development",
+      "expected": "PASS",
+      "actual": "PASS",
+      "classification": "GUARD_PASS",
+      "exitCode": 0,
+      "expectedGuardIdentifier": "",
+      "matchedGuardIdentifier": ""
+    },
+    {
+      "name": "local-mock-without-demo-opt-in",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "classification": "EXPECTED_GUARD_REJECTION",
+      "exitCode": 1,
+      "expectedGuardIdentifier": "ALGAGUARD_GUARD_LOCAL_MOCK_SENSORS_REQUIRE_DEVELOPMENT_DEMO",
+      "matchedGuardIdentifier": "ALGAGUARD_GUARD_LOCAL_MOCK_SENSORS_REQUIRE_DEVELOPMENT_DEMO"
+    },
+    {
+      "name": "production-with-local-mock",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "classification": "EXPECTED_GUARD_REJECTION",
+      "exitCode": 1,
+      "expectedGuardIdentifier": "ALGAGUARD_GUARD_PRODUCTION_FORBIDS_LOCAL_MOCK_SENSORS",
+      "matchedGuardIdentifier": "ALGAGUARD_GUARD_PRODUCTION_FORBIDS_LOCAL_MOCK_SENSORS"
+    },
+    {
+      "name": "release-with-local-mock",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "classification": "EXPECTED_GUARD_REJECTION",
+      "exitCode": 1,
+      "expectedGuardIdentifier": "ALGAGUARD_GUARD_PRODUCTION_FORBIDS_LOCAL_MOCK_SENSORS",
+      "matchedGuardIdentifier": "ALGAGUARD_GUARD_PRODUCTION_FORBIDS_LOCAL_MOCK_SENSORS"
+    },
+    {
+      "name": "ds-with-local-mock",
+      "expected": "FAIL",
+      "actual": "FAIL",
+      "classification": "EXPECTED_GUARD_REJECTION",
+      "exitCode": 1,
+      "expectedGuardIdentifier": "ALGAGUARD_GUARD_PRODUCTION_FORBIDS_LOCAL_MOCK_SENSORS",
+      "matchedGuardIdentifier": "ALGAGUARD_GUARD_PRODUCTION_FORBIDS_LOCAL_MOCK_SENSORS"
     }
   ],
   "overallStatus": "PASS"
