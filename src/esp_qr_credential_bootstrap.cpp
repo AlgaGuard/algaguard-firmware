@@ -131,6 +131,28 @@ std::optional<std::vector<std::string>> jsonStringArray(
   return result;
 }
 
+std::optional<std::uint32_t> jsonUnsigned(std::string_view input,
+                                         std::string_view key) {
+  const std::string marker = "\"" + std::string{key} + "\"";
+  auto position = input.find(marker);
+  if (position == std::string_view::npos ||
+      input.find(marker, position + marker.size()) != std::string_view::npos)
+    return std::nullopt;
+  position = input.find(':', position + marker.size());
+  if (position == std::string_view::npos) return std::nullopt;
+  ++position;
+  while (position < input.size() &&
+         (input[position] == ' ' || input[position] == '\t' ||
+          input[position] == '\r' || input[position] == '\n'))
+    ++position;
+  const auto begin = input.data() + position;
+  const auto end = input.data() + input.size();
+  std::uint32_t value{};
+  const auto parsed = std::from_chars(begin, end, value);
+  if (parsed.ec != std::errc{} || parsed.ptr == begin) return std::nullopt;
+  return value;
+}
+
 bool uuid(std::string_view value) {
   if (value.size() != 36) return false;
   for (std::size_t index = 0; index < value.size(); ++index) {
@@ -263,7 +285,7 @@ EspQrCredentialBootstrapTransport::exchange(std::string_view sessionToken,
   return result;
 }
 
-std::optional<PublicCredentialBundle>
+std::optional<QrCredentialBootstrapTransport::Issuance>
 EspQrCredentialBootstrapTransport::issue(std::string_view bootstrapToken,
                                          const CsrSubmission& csr) {
   std::string body =
@@ -285,20 +307,35 @@ EspQrCredentialBootstrapTransport::issue(std::string_view bootstrapToken,
   auto notBefore = jsonString(*response, "notBefore");
   auto notAfter = jsonString(*response, "notAfter");
   auto chain = jsonStringArray(*response, "caChainPem");
+  auto brokerHost = jsonString(*response, "host");
+  auto brokerPort = jsonUnsigned(*response, "port");
+  auto brokerServerName = jsonString(*response, "serverName");
+  auto keepAliveSeconds = jsonUnsigned(*response, "keepAliveSeconds");
+  auto sessionExpirySeconds = jsonUnsigned(*response, "sessionExpirySeconds");
   auto beforeEpoch = notBefore ? isoEpoch(*notBefore) : std::nullopt;
   auto afterEpoch = notAfter ? isoEpoch(*notAfter) : std::nullopt;
   const bool valid = credentialId && uuid(*credentialId) && deviceUuid &&
       *deviceUuid == csr.binding.device_uuid && deviceId &&
       *deviceId == csr.binding.device_id && certificate && chain &&
-      beforeEpoch && afterEpoch && *afterEpoch > *beforeEpoch &&
+      beforeEpoch && afterEpoch && *afterEpoch > *beforeEpoch && brokerHost &&
+      brokerPort && *brokerPort > 0 && *brokerPort <= 65535 &&
+      brokerServerName && *brokerServerName == *brokerHost &&
+      keepAliveSeconds && sessionExpirySeconds &&
       certificate->find("PRIVATE KEY") == std::string::npos;
   wipe(*response);
   if (!valid) return std::nullopt;
-  return PublicCredentialBundle{
+  Issuance issuance;
+  issuance.credential = PublicCredentialBundle{
       std::move(*credentialId), std::move(*certificate), std::move(*chain),
       CertificateIdentity{csr.binding.device_id,
                           {"urn:algaguard:device:" + csr.binding.device_uuid}},
       *beforeEpoch, *afterEpoch, false, false};
+  issuance.broker = BrokerEndpoint{std::move(*brokerHost),
+                                   static_cast<std::uint16_t>(*brokerPort),
+                                   std::move(*brokerServerName),
+                                   *keepAliveSeconds,
+                                   *sessionExpirySeconds};
+  return issuance;
 }
 
 }  // namespace algaguard

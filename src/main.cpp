@@ -9,6 +9,7 @@
 #include "algaguard/physical_provisioning_runtime_bridge.hpp"
 #include "algaguard/esp_qr_onboarding.hpp"
 #include "algaguard/esp_qr_credential_bootstrap.hpp"
+#include "algaguard/esp_device_telemetry.hpp"
 #include "algaguard/qr_onboarding.hpp"
 #include "algaguard/secure_identity.hpp"
 #include "algaguard/startup.hpp"
@@ -74,6 +75,9 @@ algaguard::EspQrCredentialBootstrapTransport qr_credential_transport{
     std::string{algaguard::active_firmware_config().bootstrap_api_url}};
 algaguard::QrCredentialBootstrapCoordinator qr_credential_bootstrap{
     qr_credential_keys, qr_credential_storage, qr_credential_transport};
+#if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
+algaguard::EspDeviceTelemetryRuntime device_telemetry_runtime;
+#endif
 enum class QrDisplayMode : std::uint8_t { kPrompt, kCode, kLocalDemo };
 std::atomic<QrDisplayMode> qr_display_mode{QrDisplayMode::kPrompt};
 std::atomic<std::uint32_t> qr_display_revision{};
@@ -779,6 +783,11 @@ void sampling_task(void*) {
     local_demo_reading = reading;
     ++local_demo_revision;
     portEXIT_CRITICAL(&local_demo_lock);
+#if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
+    device_telemetry_runtime.poll(
+        reading, static_cast<std::uint64_t>(xTaskGetTickCount()) *
+                     portTICK_PERIOD_MS);
+#endif
     vTaskDelay(pdMS_TO_TICKS(1000));
     continue;
 #else
@@ -927,9 +936,24 @@ void credential_bootstrap_task(void*) {
     const auto result = qr_credential_bootstrap.run(
         qr_ble_authorizer.takeBootstrapContext());
     if (result == algaguard::QrCredentialBootstrapResult::kSuccess) {
+#if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
+      const auto identity = qr_credential_storage.software_tls_identity();
+      const auto broker = qr_credential_bootstrap.broker_endpoint();
+      const bool mqttStarted = identity && broker &&
+          device_telemetry_runtime.start(
+              std::string{algaguard::active_firmware_config().device_id},
+              *broker, *identity);
+#else
+      constexpr bool mqttStarted = false;
+#endif
       ESP_LOGI(kTag,
                "QR_CREDENTIAL_BOOTSTRAP_ACTIVE privateKeyExported=false "
-               "sessionCleared=true persistence=development-credential-only");
+               "sessionCleared=true persistence=development-credential-only "
+               "mqttStarted=%s", mqttStarted ? "true" : "false");
+      if (!mqttStarted)
+        ESP_LOGE(kTag,
+                 "DEVICE_MQTT_START_FAILED privateKeyExported=false "
+                 "credentialsPersisted=development-only");
     } else {
       ESP_LOGE(kTag,
                "QR_CREDENTIAL_BOOTSTRAP_FAILED category=%u "

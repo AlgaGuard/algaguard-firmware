@@ -17,7 +17,7 @@ class EspQrCredentialBootstrapTransport final
       : baseUrl_(std::move(baseUrl)) {}
   std::optional<QrBootstrapAuthorization> exchange(
       std::string_view sessionToken, std::string_view deviceId) override;
-  std::optional<PublicCredentialBundle> issue(
+  std::optional<Issuance> issue(
       std::string_view bootstrapToken, const CsrSubmission& csr) override;
 
  private:

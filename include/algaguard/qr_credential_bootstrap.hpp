@@ -44,7 +44,12 @@ class QrCredentialBootstrapTransport {
   virtual ~QrCredentialBootstrapTransport() = default;
   virtual std::optional<QrBootstrapAuthorization> exchange(
       std::string_view sessionToken, std::string_view deviceId) = 0;
-  virtual std::optional<PublicCredentialBundle> issue(
+  struct Issuance {
+    PublicCredentialBundle credential;
+    BrokerEndpoint broker;
+  };
+
+  virtual std::optional<Issuance> issue(
       std::string_view bootstrapToken, const CsrSubmission& csr) = 0;
 };
 
@@ -83,6 +88,9 @@ class QrCredentialBootstrapCoordinator {
   }
 
   bool attempted() const { return attempted_; }
+  const std::optional<BrokerEndpoint>& broker_endpoint() const {
+    return broker_endpoint_;
+  }
 
  private:
   QrCredentialBootstrapResult finish(PrivateKeyHandle key,
@@ -93,30 +101,41 @@ class QrCredentialBootstrapCoordinator {
       keys_.destroy(key);
       return QrCredentialBootstrapResult::kCsrFailed;
     }
-    auto bundle = transport_.issue(authorization.bootstrapToken, *csr);
+    auto issuance = transport_.issue(authorization.bootstrapToken, *csr);
     authorization.clear();
     std::fill(csr->pem.begin(), csr->pem.end(), '\0');
     csr->pem.clear();
-    if (!bundle) {
+    if (!issuance) {
       keys_.destroy(key);
       return QrCredentialBootstrapResult::kIssueRejected;
     }
-    if (!exact_certificate_binding(binding, bundle->identity)) {
+    if (!exact_certificate_binding(binding, issuance->credential.identity)) {
       keys_.destroy(key);
       return QrCredentialBootstrapResult::kCertificateBindingMismatch;
     }
-    if (!storage_.stage(key, *bundle) || !storage_.activate_staged()) {
+    if (!valid_broker_endpoint(issuance->broker) ||
+        !storage_.stage(key, issuance->credential) ||
+        !storage_.activate_staged()) {
       storage_.discard_staged();
       keys_.destroy(key);
       return QrCredentialBootstrapResult::kStorageFailed;
     }
+    broker_endpoint_ = std::move(issuance->broker);
     return QrCredentialBootstrapResult::kSuccess;
+  }
+
+  static bool valid_broker_endpoint(const BrokerEndpoint& value) {
+    return !value.host.empty() && value.host.size() <= 253 && value.port != 0 &&
+           value.server_name == value.host && value.keepalive_seconds >= 15 &&
+           value.keepalive_seconds <= 3600 &&
+           value.session_expiry_seconds <= 604800;
   }
 
   LocalPrivateKeyProvider& keys_;
   SecureCredentialStorage& storage_;
   QrCredentialBootstrapTransport& transport_;
   bool attempted_{};
+  std::optional<BrokerEndpoint> broker_endpoint_;
 };
 
 }  // namespace algaguard

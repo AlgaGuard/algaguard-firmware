@@ -4,8 +4,9 @@ set(ALGAGUARD_QRCODE_SOURCE
 idf_component_register(SRCS "main.cpp" "secure_identity_compile_proof.cpp" "secure_identity.cpp"
                            "ble_provisioning_transport.cpp" "esp_idf_wifi_connection_adapter.cpp"
                            "esp_qr_onboarding.cpp" "esp_qr_credential_bootstrap.cpp"
+                           "esp_device_telemetry.cpp"
                        INCLUDE_DIRS "../include"
-                       REQUIRES esp-tls mbedtls efuse nvs_flash bt esp_wifi esp_event esp_netif esp_http_client)
+                       REQUIRES esp-tls mbedtls efuse nvs_flash bt esp_wifi esp_event esp_netif esp_http_client mqtt)
 
 if(EXISTS "${ALGAGUARD_QRCODE_SOURCE}")
     add_library(algaguard_qrcode STATIC "${ALGAGUARD_QRCODE_SOURCE}")

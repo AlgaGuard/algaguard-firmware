@@ -38,3 +38,8 @@ ready, and QR-expired pages. A QR invitation is public, short-lived, and
 one-time; it contains no Wi-Fi, session, account, key, certificate, or cloud
 secret. This combined profile may initialize the Wi-Fi runtime but cannot start
 a connection until a signed QR-bound BLE request consumes the one-shot gate.
+After successful QR provisioning and credential bootstrap, it may publish the
+same local simulated values through the canonical telemetry pipeline over
+certificate-authenticated MQTT. Published samples remain explicitly labeled
+`SIMULATED` / `device-local-demo`; the standalone local-OLED profile never
+starts MQTT.

@@ -91,16 +91,19 @@ class BootstrapTransport final : public algaguard::QrCredentialBootstrapTranspor
     value.bootstrapToken = "synthetic-memory-only-authorization";
     return value;
   }
-  std::optional<algaguard::PublicCredentialBundle> issue(
+  std::optional<Issuance> issue(
       std::string_view, const algaguard::CsrSubmission& csr) override {
     if (!issueAllowed) return std::nullopt;
     const auto uuidValue = wrongBinding
         ? "20000000-0000-4000-8000-000000000002"
         : csr.binding.device_uuid;
-    return algaguard::PublicCredentialBundle{
-        "30000000-0000-4000-8000-000000000003", "PUBLIC CERT", {"PUBLIC CA"},
-        {csr.binding.device_id, {"urn:algaguard:device:" + uuidValue}},
-        1, 2, false, false};
+    return Issuance{
+        algaguard::PublicCredentialBundle{
+            "30000000-0000-4000-8000-000000000003", "PUBLIC CERT", {"PUBLIC CA"},
+            {csr.binding.device_id, {"urn:algaguard:device:" + uuidValue}},
+            1, 2, false, false},
+        {"mqtt.algaguard.bosilu.dev", 8883,
+         "mqtt.algaguard.bosilu.dev", 60, 3600}};
   }
 };
 
@@ -321,6 +324,9 @@ void test_238_got_ip_bootstrap_issues_and_activates_once() {
   TEST_ASSERT_TRUE(keys.generated);
   TEST_ASSERT_TRUE(storage.active);
   TEST_ASSERT_TRUE(coordinator.attempted());
+  TEST_ASSERT_TRUE(coordinator.broker_endpoint().has_value());
+  TEST_ASSERT_EQUAL_STRING("mqtt.algaguard.bosilu.dev",
+                           coordinator.broker_endpoint()->host.c_str());
 }
 void test_239_exchange_failure_does_not_generate_key() {
   Keys keys; Storage storage; BootstrapTransport transport; transport.exchangeAllowed = false;
