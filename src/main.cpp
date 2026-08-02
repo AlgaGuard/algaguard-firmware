@@ -668,12 +668,15 @@ void render_startup_state() {
     #endif
     const bool wifi_connected =
         wifi_connection_runtime.state() == algaguard::WifiConnectionState::kConnected;
-    bool cloud_connected = false;
     #if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
-    cloud_connected = device_telemetry_runtime.connected();
+    const bool cloud_connected = device_telemetry_runtime.connected();
+    #else
+    constexpr bool cloud_connected = false;
     #endif
-    const auto visible_revision = revision + (wifi_connected ? 0x20000000U : 0U) +
-                                  (cloud_connected ? 0x40000000U : 0U);
+    auto visible_revision = revision + (wifi_connected ? 0x20000000U : 0U);
+    #if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
+    visible_revision += cloud_connected ? 0x40000000U : 0U;
+    #endif
     if (visible_revision == last_demo_revision) return;
     last_demo_revision = visible_revision;
     const bool advertising = ble_provisioning_transport.advertisingRuntimeStatus().advertisingActive;
@@ -1042,11 +1045,15 @@ void input_task(void*) {
 
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
 void credential_bootstrap_task(void*) {
+#if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
   bool restoredIdentityChecked = false;
+#endif
   while (true) {
     if (wifi_connection_runtime.state() !=
         algaguard::WifiConnectionState::kConnected) {
+#if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
       restoredIdentityChecked = false;
+#endif
       vTaskDelay(pdMS_TO_TICKS(200));
       continue;
     }
@@ -1078,7 +1085,9 @@ void credential_bootstrap_task(void*) {
                  "privateKeyExported=false sessionCleared=true",
                  static_cast<unsigned>(result));
       }
+#if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
       restoredIdentityChecked = true;
+#endif
     }
 #if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
     if (!device_telemetry_runtime.started() && !restoredIdentityChecked) {
