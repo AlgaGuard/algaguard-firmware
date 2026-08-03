@@ -1,4 +1,9 @@
+<<<<<<< HEAD
+#include "algaguard/hardware.hpp"
+#include "algaguard/brand_splash.hpp"
+=======
 #include "algaguard/config.hpp"
+>>>>>>> origin/develop
 #include "algaguard/credentials.hpp"
 #include "algaguard/display.hpp"
 #include "algaguard/hardware.hpp"
@@ -78,6 +83,27 @@ esp_err_t oled_framebuffer(const std::array<std::uint8_t, 1024>& framebuffer) {
   return ESP_OK;
 }
 
+<<<<<<< HEAD
+esp_err_t draw_oled_bitmap(const std::array<std::uint8_t, 1024>& bitmap) {
+  for (std::uint8_t page = 0; page < 8; ++page) {
+    esp_err_t result = oled_command(0xB0U | page);
+    if (result != ESP_OK) return result;
+    result = oled_command(0x00);
+    if (result != ESP_OK) return result;
+    result = oled_command(0x10);
+    if (result != ESP_OK) return result;
+    i2c_cmd_handle_t transaction = i2c_cmd_link_create();
+    i2c_master_start(transaction);
+    i2c_master_write_byte(transaction, (algaguard::hardware::kOledAddress << 1U) | I2C_MASTER_WRITE, true);
+    i2c_master_write_byte(transaction, 0x40, true);
+    i2c_master_write(transaction, bitmap.data() + page * 128, 128, true);
+    i2c_master_stop(transaction);
+    result = i2c_master_cmd_begin(I2C_NUM_0, transaction, pdMS_TO_TICKS(100));
+    i2c_cmd_link_delete(transaction);
+    if (result != ESP_OK) return result;
+  }
+  return ESP_OK;
+=======
 std::array<std::uint8_t, 5> glyph(char raw) {
   const char value =
       static_cast<char>(std::toupper(static_cast<unsigned char>(raw)));
@@ -137,6 +163,7 @@ esp_err_t render_screen(const algaguard::DiagnosticScreen& screen) {
     draw_text(framebuffer, screen.lines[index], 0,
               static_cast<std::uint8_t>(index * 8U));
   return oled_framebuffer(framebuffer);
+>>>>>>> origin/develop
 }
 
 void configure_gpio() {
@@ -191,6 +218,10 @@ esp_err_t configure_oled_i2c() {
     oled_bus = nullptr;
     return result;
   }
+<<<<<<< HEAD
+  ESP_ERROR_CHECK(clear_oled());
+  ESP_ERROR_CHECK(draw_oled_bitmap(algaguard::brand::kOledBootSplash));
+=======
   for (const std::uint8_t command :
        {0xAE, 0x20, 0x00, 0x40, 0xA1, 0xC8, 0x81, 0x7F, 0xA6, 0xA8,
         0x3F, 0xD3, 0x00, 0xD5, 0x80, 0xD9, 0xF1, 0xDA, 0x12, 0xDB,
@@ -199,6 +230,7 @@ esp_err_t configure_oled_i2c() {
     if (result != ESP_OK) return result;
   }
   return ESP_OK;
+>>>>>>> origin/develop
 }
 
 void apply_leds(algaguard::StartupState state,
@@ -212,6 +244,32 @@ void apply_leds(algaguard::StartupState state,
                  leds.blue);
 }
 
+<<<<<<< HEAD
+void run_led_self_test() {
+  constexpr std::array<int, 3> kLedPins = {algaguard::hardware::kLedRed, algaguard::hardware::kLedGreen,
+                                            algaguard::hardware::kLedBlue};
+  ESP_LOGI(kTag, "led_self_test=red_green_blue");
+  for (const int pin : kLedPins) {
+    gpio_set_level(static_cast<gpio_num_t>(pin), 1);
+    vTaskDelay(pdMS_TO_TICKS(250));
+    gpio_set_level(static_cast<gpio_num_t>(pin), 0);
+  }
+}
+
+void report_button_event(const char* name, algaguard::ButtonEvent event) {
+  if (event == algaguard::ButtonEvent::kShortPress) {
+    ESP_LOGI(kTag, "button=%s event=short_press", name);
+  }
+}
+
+void render_oled_state() {
+  // The SSD1306 remains on the approved 0x3C I2C bus. Rendering is deliberately
+  // non-secret: setup shows device ID/QR/fallback code; cloud/OTA screens show status only.
+  static int last_page = -1;
+  if (last_page == static_cast<int>(menu.page())) return;
+  last_page = static_cast<int>(menu.page());
+  ESP_LOGI(kTag, "oled page=%d device=AG-000001 simulated=true", static_cast<int>(menu.page()));
+=======
 class EspFoundationServices final : public algaguard::StartupServices {
  public:
   explicit EspFoundationServices(RuntimeBoardProfile& board) : board_(board) {}
@@ -343,6 +401,7 @@ void startup_task(void*) {
     }
     vTaskDelay(pdMS_TO_TICKS(50));
   }
+>>>>>>> origin/develop
 }
 
 void sampling_task(void*) {
@@ -369,6 +428,22 @@ void sampling_task(void*) {
 
 void input_task(void*) {
   while (true) {
+<<<<<<< HEAD
+    const auto now = static_cast<std::uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    const auto up = up_button.update(gpio_get_level(static_cast<gpio_num_t>(algaguard::hardware::kButtonUp)) == 0, now);
+    const auto down = down_button.update(gpio_get_level(static_cast<gpio_num_t>(algaguard::hardware::kButtonDown)) == 0, now);
+    const auto select = select_button.update(gpio_get_level(static_cast<gpio_num_t>(algaguard::hardware::kButtonSelect)) == 0, now);
+    const auto back = back_button.update(gpio_get_level(static_cast<gpio_num_t>(algaguard::hardware::kButtonBack)) == 0, now);
+    if (up == algaguard::ButtonEvent::kShortPress) menu.up();
+    if (down == algaguard::ButtonEvent::kShortPress) menu.down();
+    if (select == algaguard::ButtonEvent::kShortPress) menu.select();
+    if (back == algaguard::ButtonEvent::kShortPress) menu.back();
+    report_button_event("up", up);
+    report_button_event("down", down);
+    report_button_event("select", select);
+    report_button_event("back", back);
+    render_oled_state();
+=======
     if (startup.state() < algaguard::StartupState::kProvisioningStateLoad) {
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
@@ -397,6 +472,7 @@ void input_task(void*) {
                 static_cast<gpio_num_t>(algaguard::hardware::kButtonBack)) == 0,
             now) == algaguard::ButtonEvent::kShortPress)
       menu.back();
+>>>>>>> origin/develop
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
@@ -405,6 +481,22 @@ void input_task(void*) {
 extern "C" void app_main() {
   esp_chip_info_t chip{};
   esp_chip_info(&chip);
+<<<<<<< HEAD
+  std::uint32_t flash_bytes = 0;
+  ESP_ERROR_CHECK(esp_flash_get_size(nullptr, &flash_bytes));
+  const std::uint32_t psram_bytes = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+  const bool expected_n16r8 = flash_bytes >= 16U * 1024U * 1024U && psram_bytes >= 8U * 1024U * 1024U;
+  ESP_LOGI(kTag, "AlgaGuard USB-only boot cores=%d flash=%u psram=%u expected_n16r8=%s oled=0x%02X", chip.cores,
+           flash_bytes, psram_bytes, expected_n16r8 ? "true" : "false", algaguard::hardware::kOledAddress);
+  if (!credential_limits.bounded()) {
+    ESP_LOGE(kTag, "credential_transport_limits_invalid");
+    return;
+  }
+  run_led_self_test();
+  apply_leds(algaguard::LedPriority::kSetupOrOta);
+  xTaskCreate(sampling_task, "simulated_sampling", 4096, nullptr, 5, nullptr);
+  xTaskCreate(input_task, "buttons_oled", 4096, nullptr, 5, nullptr);
+=======
   board_profile.chip_revision = chip.revision;
   board_profile.chip_cores = chip.cores;
   ESP_ERROR_CHECK(esp_flash_get_size(nullptr, &board_profile.flash_bytes));
@@ -444,4 +536,5 @@ extern "C" void app_main() {
   xTaskCreate(startup_task, "startup_state", 6144, nullptr, 8, nullptr);
   xTaskCreate(input_task, "buttons", 4096, nullptr, 5, nullptr);
   xTaskCreate(sampling_task, "simulated_sampling", 4096, nullptr, 4, nullptr);
+>>>>>>> origin/develop
 }
