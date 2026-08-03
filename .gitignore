@@ -1,6 +1,9 @@
 .pio/
 .vscode/
 compile_commands.json
+sdkconfig.*
+!sdkconfig.defaults
+__pycache__/
 firmware-manifest.json
 *.pem
 *.key
