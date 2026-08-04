@@ -4,6 +4,7 @@
 #include "algaguard/esp_idf_wifi_connection_adapter.hpp"
 #include "algaguard/credentials.hpp"
 #include "algaguard/display.hpp"
+#include "algaguard/display_fx.hpp"
 #include "algaguard/hardware.hpp"
 #include "algaguard/local_demo.hpp"
 #include "algaguard/physical_test_harness.hpp"
@@ -42,6 +43,12 @@
 #include <string_view>
 
 namespace {
+using algaguard::compose_screen;
+using algaguard::draw_pixel;
+using algaguard::Framebuffer;
+using algaguard::splash_frame;
+using algaguard::wipe_transition;
+
 constexpr char kTag[] = "algaguard";
 constexpr std::uint32_t kExpectedFlashBytes = 16U * 1024U * 1024U;
 constexpr std::uint32_t kExpectedPsramBytes = 8U * 1024U * 1024U;
@@ -133,7 +140,7 @@ esp_err_t oled_command(std::uint8_t command) {
   return i2c_master_transmit(oled_device, payload.data(), payload.size(), 100);
 }
 
-esp_err_t oled_framebuffer(const std::array<std::uint8_t, 1024>& framebuffer) {
+esp_err_t oled_framebuffer(const Framebuffer& framebuffer) {
   for (std::uint8_t page = 0; page < 8; ++page) {
     esp_err_t result = oled_command(static_cast<std::uint8_t>(0xB0U | page));
     if (result != ESP_OK) return result;
@@ -149,73 +156,33 @@ esp_err_t oled_framebuffer(const std::array<std::uint8_t, 1024>& framebuffer) {
   return ESP_OK;
 }
 
-std::array<std::uint8_t, 5> glyph(char raw) {
-  const char value =
-      static_cast<char>(std::toupper(static_cast<unsigned char>(raw)));
-  if (value >= '0' && value <= '9') {
-    constexpr std::array<std::array<std::uint8_t, 5>, 10> digits{{
-        {{7, 5, 5, 5, 7}}, {{2, 6, 2, 2, 7}}, {{7, 1, 7, 4, 7}},
-        {{7, 1, 7, 1, 7}}, {{5, 5, 7, 1, 1}}, {{7, 4, 7, 1, 7}},
-        {{7, 4, 7, 5, 7}}, {{7, 1, 1, 2, 2}}, {{7, 5, 7, 5, 7}},
-        {{7, 5, 7, 1, 7}},
-    }};
-    return digits[static_cast<std::size_t>(value - '0')];
-  }
-  if (value >= 'A' && value <= 'Z') {
-    constexpr std::array<std::array<std::uint8_t, 5>, 26> letters{{
-        {{2, 5, 7, 5, 5}}, {{6, 5, 6, 5, 6}}, {{3, 4, 4, 4, 3}},
-        {{6, 5, 5, 5, 6}}, {{7, 4, 6, 4, 7}}, {{7, 4, 6, 4, 4}},
-        {{3, 4, 5, 5, 3}}, {{5, 5, 7, 5, 5}}, {{7, 2, 2, 2, 7}},
-        {{1, 1, 1, 5, 2}}, {{5, 5, 6, 5, 5}}, {{4, 4, 4, 4, 7}},
-        {{5, 7, 7, 5, 5}}, {{5, 7, 7, 7, 5}}, {{2, 5, 5, 5, 2}},
-        {{6, 5, 6, 4, 4}}, {{2, 5, 5, 7, 3}}, {{6, 5, 6, 5, 5}},
-        {{3, 4, 2, 1, 6}}, {{7, 2, 2, 2, 2}}, {{5, 5, 5, 5, 7}},
-        {{5, 5, 5, 5, 2}}, {{5, 5, 7, 7, 5}}, {{5, 5, 2, 5, 5}},
-        {{5, 5, 2, 2, 2}}, {{7, 1, 2, 4, 7}},
-    }};
-    return letters[static_cast<std::size_t>(value - 'A')];
-  }
-  if (value == '-') return {{0, 0, 7, 0, 0}};
-  if (value == '_') return {{0, 0, 0, 0, 7}};
-  if (value == ':') return {{0, 2, 0, 2, 0}};
-  if (value == '.') return {{0, 0, 0, 0, 2}};
-  return {{0, 0, 0, 0, 0}};
-}
+// Tracks the last frame actually pushed to the panel so render_screen_animated
+// has a `from` frame to wipe out of. A transition only ever costs a handful
+// of extra full-frame I2C flushes -- the same primitive the codebase already
+// uses for every redraw -- spread across a few tens of milliseconds, so it
+// never turns into an unbounded block on the shared startup task.
+Framebuffer last_rendered_framebuffer{};
+bool has_last_rendered_framebuffer{};
+constexpr std::uint8_t kScreenTransitionSteps = 4;
+constexpr std::uint32_t kScreenTransitionStepMs = 16;
 
-void draw_text(std::array<std::uint8_t, 1024>& framebuffer,
-               std::string_view text, std::uint8_t origin_x,
-               std::uint8_t origin_y) {
-  std::uint8_t x = origin_x;
-  for (const char character : text) {
-    if (x > 123) break;
-    const auto rows = glyph(character);
-    for (std::uint8_t row = 0; row < rows.size(); ++row) {
-      for (std::uint8_t column = 0; column < 3; ++column) {
-        if ((rows[row] & (1U << (2U - column))) == 0) continue;
-        const auto pixel_x = static_cast<std::uint8_t>(x + column);
-        const auto pixel_y = static_cast<std::uint8_t>(origin_y + row);
-        framebuffer[(pixel_y / 8U) * 128U + pixel_x] |=
-            static_cast<std::uint8_t>(1U << (pixel_y % 8U));
-      }
-    }
-    x = static_cast<std::uint8_t>(x + 4U);
+esp_err_t render_screen_animated(const algaguard::DiagnosticScreen& screen) {
+  const Framebuffer target = compose_screen(screen);
+  if (!has_last_rendered_framebuffer) {
+    has_last_rendered_framebuffer = true;
+    last_rendered_framebuffer = target;
+    return oled_framebuffer(target);
   }
-}
-
-void draw_text_scaled(std::array<std::uint8_t, 1024>& framebuffer,
-                      std::string_view text, std::uint8_t origin_x,
-                      std::uint8_t origin_y, std::uint8_t scale);
-
-esp_err_t render_screen(const algaguard::DiagnosticScreen& screen) {
-  std::array<std::uint8_t, 1024> framebuffer{};
-  if (screen.lines[0].size() <= 10)
-    draw_text_scaled(framebuffer, screen.lines[0], 0, 0, 2);
-  else
-    draw_text(framebuffer, screen.lines[0], 0, 2);
-  for (std::uint8_t index = 1; index < screen.lines.size(); ++index)
-    draw_text(framebuffer, screen.lines[index], 0,
-              static_cast<std::uint8_t>(16U + (index - 1U) * 16U));
-  return oled_framebuffer(framebuffer);
+  esp_err_t result = ESP_OK;
+  for (std::uint8_t step = 1; step <= kScreenTransitionSteps; ++step) {
+    result = oled_framebuffer(
+        wipe_transition(last_rendered_framebuffer, target, step, kScreenTransitionSteps));
+    if (result != ESP_OK) break;
+    if (step < kScreenTransitionSteps)
+      vTaskDelay(pdMS_TO_TICKS(kScreenTransitionStepMs));
+  }
+  last_rendered_framebuffer = target;
+  return result;
 }
 
 void configure_gpio() {
@@ -294,61 +261,26 @@ esp_err_t configure_oled_i2c() {
   return ESP_OK;
 }
 
-void draw_text_scaled(std::array<std::uint8_t, 1024>& framebuffer,
-                      std::string_view text, std::uint8_t origin_x,
-                      std::uint8_t origin_y, std::uint8_t scale) {
-  std::uint8_t x = origin_x;
-  for (const char character : text) {
-    const auto rows = glyph(character);
-    for (std::uint8_t row = 0; row < rows.size(); ++row)
-      for (std::uint8_t column = 0; column < 3; ++column) {
-        if ((rows[row] & (1U << (2U - column))) == 0) continue;
-        for (std::uint8_t dy = 0; dy < scale; ++dy)
-          for (std::uint8_t dx = 0; dx < scale; ++dx) {
-            const auto px = static_cast<std::uint8_t>(x + column * scale + dx);
-            const auto py = static_cast<std::uint8_t>(origin_y + row * scale + dy);
-            if (px < 128 && py < 64)
-              framebuffer[(py / 8U) * 128U + px] |=
-                  static_cast<std::uint8_t>(1U << (py % 8U));
-          }
-      }
-    x = static_cast<std::uint8_t>(x + 4U * scale);
-    if (x >= 128) break;
-  }
-}
-
-void draw_brand_logo(std::array<std::uint8_t, 1024>& framebuffer,
-                     std::uint8_t origin_x, std::uint8_t origin_y) {
-  for (std::uint8_t y = 0; y < algaguard::brand::kLogoHeight; ++y)
-    for (std::uint8_t x = 0; x < algaguard::brand::kLogoWidth; ++x) {
-      const auto byte = algaguard::brand::kLogoMask[
-          static_cast<std::size_t>(y) * algaguard::brand::kLogoStride + x / 8U];
-      if ((byte & (1U << (7U - x % 8U))) == 0) continue;
-      const auto px = static_cast<std::uint8_t>(origin_x + x);
-      const auto py = static_cast<std::uint8_t>(origin_y + y);
-      if (px < 128 && py < 64)
-        framebuffer[(py / 8U) * 128U + px] |=
-            static_cast<std::uint8_t>(1U << (py % 8U));
-    }
-}
+// Boot splash: the logo wipes in top-to-bottom and the wordmark settles in
+// as the reveal completes, spending roughly the same time budget the old
+// static splash used to hold for -- see the shortened post-splash hold in
+// EspFoundationServices::display_init() below.
+constexpr std::uint8_t kSplashSteps = 8;
+constexpr std::uint32_t kSplashStepMs = 55;
 
 esp_err_t render_brand_splash() {
-  std::array<std::uint8_t, 1024> framebuffer{};
-  draw_brand_logo(framebuffer, 6, 10);
-  draw_text_scaled(framebuffer, "ALGA", 50, 12, 2);
-  draw_text_scaled(framebuffer, "GUARD", 50, 28, 2);
-  draw_text(framebuffer, "TANK MONITOR", 50, 48);
-  return oled_framebuffer(framebuffer);
+  esp_err_t result = ESP_OK;
+  for (std::uint8_t step = 1; step <= kSplashSteps; ++step) {
+    result = oled_framebuffer(splash_frame(step, kSplashSteps));
+    if (result != ESP_OK) return result;
+    if (step < kSplashSteps) vTaskDelay(pdMS_TO_TICKS(kSplashStepMs));
+  }
+  last_rendered_framebuffer = splash_frame(kSplashSteps, kSplashSteps);
+  has_last_rendered_framebuffer = true;
+  return result;
 }
 
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
-void draw_pixel(std::array<std::uint8_t, 1024>& framebuffer,
-                std::uint8_t x, std::uint8_t y) {
-  if (x >= 128 || y >= 64) return;
-  framebuffer[(y / 8U) * 128U + x] |=
-      static_cast<std::uint8_t>(1U << (y % 8U));
-}
-
 esp_err_t render_qr_code(std::string_view uri) {
   if (uri.size() != algaguard::kQrInvitationUriBytes) return ESP_ERR_INVALID_ARG;
   std::array<std::uint8_t, 512> modules{};
@@ -356,7 +288,7 @@ esp_err_t render_qr_code(std::string_view uri) {
   const std::string text{uri};
   if (qrcode_initText(&code, modules.data(), 3, ECC_LOW, text.c_str()) != 0 ||
       code.size > 33) return ESP_FAIL;
-  std::array<std::uint8_t, 1024> framebuffer{};
+  Framebuffer framebuffer{};
   constexpr std::uint8_t scale = 2;
   constexpr std::uint8_t quietModules = 1;
   const auto total =
@@ -384,7 +316,7 @@ esp_err_t render_qr_prompt() {
   algaguard::DiagnosticScreen screen{};
   screen.lines = {{"SCAN TO ADD", "PRESS SELECT", "QR IS ONE TIME",
                    "BACK DEMO MODE"}};
-  return render_screen(screen);
+  return render_screen_animated(screen);
 }
 #endif
 
@@ -525,7 +457,10 @@ class EspFoundationServices final : public algaguard::StartupServices {
     if (render_brand_splash() != ESP_OK)
       return {algaguard::OperationStatus::kRecoverableFailure,
               algaguard::StartupReason::kModuleUnavailable};
-    oled_splash_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(900);
+    // render_brand_splash() already spent ~kSplashSteps*kSplashStepMs animating
+    // the reveal; this hold just keeps the finished mark on screen a beat
+    // longer before the first status screen wipes in over it.
+    oled_splash_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(300);
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
     const auto preflight = algaguard::physical_board_preflight(
         {board_.chip_is_esp32s3, board_.flash_bytes, board_.psram_available,
@@ -618,6 +553,26 @@ void render_startup_state() {
   if (static_cast<std::int32_t>(xTaskGetTickCount() - oled_splash_until_tick) < 0)
     return;
   static auto last_state = static_cast<algaguard::StartupState>(255);
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING) && \
+    defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
+  static bool last_unpair_pending{};
+  const bool unpair_pending = device_telemetry_runtime.physicalUnpairPending();
+  if (unpair_pending) {
+    if (!last_unpair_pending) {
+      algaguard::DiagnosticScreen confirmation{};
+      confirmation.lines = {{"REMOVE DEVICE?", "SELECT CONFIRM", "BACK CANCEL",
+                             "CLOUD STAYS SAFE"}};
+      if (render_screen_animated(confirmation) != ESP_OK)
+        ESP_LOGE(kTag, "display_update_failed mode=PHYSICAL_UNPAIR");
+    }
+    last_unpair_pending = true;
+    return;
+  }
+  if (last_unpair_pending) {
+    last_unpair_pending = false;
+    qr_display_revision.fetch_add(1, std::memory_order_release);
+  }
+#endif
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
   static auto last_physical_state = static_cast<algaguard::PhysicalTestState>(255);
 #endif
@@ -648,15 +603,15 @@ void render_startup_state() {
       if (qr_onboarding.state() == algaguard::QrOnboardingState::kExpired) {
         algaguard::DiagnosticScreen expired{};
         expired.lines = {{"QR EXPIRED", "PRESS SELECT", "FOR NEW QR", "NO SECRETS"}};
-        result = render_screen(expired);
+        result = render_screen_animated(expired);
       } else if (qr_onboarding.state() == algaguard::QrOnboardingState::kConsumed) {
         algaguard::DiagnosticScreen consumed{};
         consumed.lines = {{"QR USED", "PRESS SELECT", "FOR NEW QR", "NO SECRETS"}};
-        result = render_screen(consumed);
+        result = render_screen_animated(consumed);
       } else if (qr_onboarding.state() == algaguard::QrOnboardingState::kError) {
         algaguard::DiagnosticScreen error{};
         error.lines = {{"QR ERROR", "PRESS SELECT", "FOR NEW QR", "NO SECRETS"}};
-        result = render_screen(error);
+        result = render_screen_animated(error);
       } else if (display_mode == QrDisplayMode::kCode) {
         result = render_qr_code(qr_onboarding.uri());
       } else {
@@ -692,7 +647,7 @@ void render_startup_state() {
     const auto visible_screen = algaguard::local_demo_screen(
         page, reading, advertising, wifi_connected, cloud_connected,
         development_wifi_stored, network_state);
-    if (render_screen(visible_screen) != ESP_OK)
+    if (render_screen_animated(visible_screen) != ESP_OK)
       ESP_LOGE(kTag, "display_update_failed mode=LOCAL_DEMO");
     return;
   }
@@ -714,7 +669,7 @@ void render_startup_state() {
 #if defined(ALGAGUARD_SECURITY_PROFILE_DEV_SOFTWARE_KEY)
   visible_screen.lines[3] = "INSECURE DEV KEY";
 #endif
-  const esp_err_t result = render_screen(visible_screen);
+  const esp_err_t result = render_screen_animated(visible_screen);
   if (result != ESP_OK)
     ESP_LOGE(kTag, "display_update_failed code=%s",
              esp_err_to_name(result));
@@ -957,6 +912,33 @@ void input_task(void*) {
             gpio_get_level(static_cast<gpio_num_t>(
                 algaguard::hardware::kButtonSelect)) == 0,
             now) == algaguard::ButtonEvent::kShortPress) {
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING) && \
+    defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
+      if (device_telemetry_runtime.physicalUnpairPending()) {
+        const bool identity_cleared =
+            qr_credential_storage.confirmed_reset(true);
+        qr_onboarding.clear();
+#if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
+        physical_runtime_bridge.clear(wifi_connection_runtime,
+                                      physical_session_installer);
+#else
+        (void)wifi_connection_runtime.reset();
+#endif
+        const bool result_queued =
+            device_telemetry_runtime.confirmPhysicalUnpair(identity_cleared);
+        if (result_queued) vTaskDelay(pdMS_TO_TICKS(250));
+        const bool wifi_cleared = wifi_connection_adapter.forgetSavedNetwork();
+        qr_display_mode.store(QrDisplayMode::kPrompt,
+                              std::memory_order_relaxed);
+        qr_display_revision.fetch_add(1, std::memory_order_release);
+        ESP_LOGI(kTag,
+                 "PHYSICAL_UNPAIR_CONFIRMED identityCleared=%s "
+                 "wifiCleared=%s secretsShown=false",
+                 identity_cleared ? "true" : "false",
+                 wifi_cleared ? "true" : "false");
+      } else
+#endif
+      {
 #if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
       ESP_LOGI(kTag, "BUTTON_EVENT action=SELECT");
@@ -1012,6 +994,7 @@ void input_task(void*) {
       menu.select();
       if (menu.reset_confirmed()) startup.confirmed_reset(true);
 #endif
+      }
     }
     if (back_button.update(
             gpio_get_level(
@@ -1021,6 +1004,15 @@ void input_task(void*) {
       {
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
         ESP_LOGI(kTag, "BUTTON_EVENT action=BACK");
+#if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
+        if (device_telemetry_runtime.physicalUnpairPending()) {
+          (void)device_telemetry_runtime.cancelPhysicalUnpair();
+          qr_display_revision.fetch_add(1, std::memory_order_release);
+          ESP_LOGI(kTag, "PHYSICAL_UNPAIR_CANCELLED secretsShown=false");
+          vTaskDelay(pdMS_TO_TICKS(20));
+          continue;
+        }
+#endif
         if (qr_display_mode.load(std::memory_order_relaxed) !=
             QrDisplayMode::kLocalDemo) {
           qr_display_mode.store(QrDisplayMode::kLocalDemo,
