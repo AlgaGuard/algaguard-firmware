@@ -390,7 +390,26 @@ class PhysicalProvisioningRuntimeBridge {
       if (handoff.available()) {
         const auto result = runtime.installAcceptedCredentials(std::move(handoff));
         handoffInstalled_ = result.state == WifiConnectionState::kCredentialsReady;
-        if (handoffInstalled_) { installer.clear(); changed = true; }
+        if (handoffInstalled_) {
+          installer.clear();
+          changed = true;
+#if defined(ALGAGUARD_LOCAL_DEMO_MODE)
+          // The wifi-connect gate exists so the automated physical-test
+          // harness controls exactly when a connection attempt fires, by
+          // sending an explicit kArmOneWifiConnectionTest command over the
+          // UART console before each attempt. A demo build is driven by a
+          // person pairing over BLE from the phone app, and nothing in that
+          // flow ever sends that command -- without this, credentials get
+          // accepted and stored but the real esp_wifi_connect() call never
+          // fires. The gate stays closed forever: the app reports "Wi-Fi
+          // accepted" followed by a cloud-readiness timeout, and the OLED
+          // correctly never shows connected, because the device genuinely
+          // never connects. Auto-arm here so accepting credentials in a demo
+          // build is sufficient on its own, exactly like a real device.
+          (void)physical_wifi_connect_gate.arm(
+              now, kPhysicalWifiGateMaxLifetimeTicks, false, false);
+#endif
+        }
       }
     }
     if (handoffInstalled_ && !connectionAuthorized_ && physical_wifi_connect_gate.consume(now)) {
