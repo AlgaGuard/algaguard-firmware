@@ -257,7 +257,17 @@ bool EspDeviceTelemetryRuntime::start(std::string deviceId,
       impl_->identity.client_private_key.data());
   config.credentials.authentication.key_len =
       impl_->identity.client_private_key.size();
-  config.session.keepalive = impl_->endpoint.keepalive_seconds;
+  // esp-mqtt sends PINGREQ at keepalive/2 (mqtt_client.c: process_keepalive()).
+  // A provisioned keepalive of 60s therefore pings every 30s, which lines up
+  // almost exactly with the ~28-30s idle/NAT timeout several carrier-grade
+  // and consumer NATs enforce -- the ping and the timeout race, and the ping
+  // occasionally loses, producing the "transport_read(): EOF, errno=119"
+  // disconnect/reconnect cycle observed on live hardware. Clamping keepalive
+  // well below that gives every ping real margin, regardless of what was
+  // baked into an already-paired device's stored credentials.
+  constexpr std::uint32_t kMaxKeepaliveSeconds = 20;
+  config.session.keepalive = std::min(impl_->endpoint.keepalive_seconds,
+                                       kMaxKeepaliveSeconds);
   config.session.disable_clean_session = true;
   config.network.reconnect_timeout_ms = 2000;
   config.network.timeout_ms = 10000;
