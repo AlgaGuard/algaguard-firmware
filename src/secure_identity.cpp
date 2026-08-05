@@ -2,6 +2,7 @@
 #include "algaguard/config.hpp"
 #include "algaguard/security_profile_guards.hpp"
 
+#include "esp_log.h"
 #include "esp_random.h"
 #include "esp_tls.h"
 #include "nvs.h"
@@ -22,7 +23,10 @@
 
 namespace algaguard {
 namespace {
-constexpr char kNamespace[] = "algaguard_dev_identity";
+// NVS namespace names are capped at 15 characters (NVS_KEY_NAME_MAX_SIZE - 1);
+// anything longer fails nvs_open() with ESP_ERR_NVS_KEY_TOO_LONG.
+constexpr char kNamespace[] = "algaguard_id";
+constexpr char kReloadDiagTag[] = "algaguard_identity_reload";
 constexpr std::size_t kRsaBits = 3072;
 constexpr std::size_t kEcBits = 256;
 constexpr std::size_t kPrivateKeyExportMax = PSA_EXPORT_KEY_OUTPUT_SIZE(PSA_KEY_TYPE_RSA_KEY_PAIR, kRsaBits);
@@ -78,6 +82,71 @@ bool ecdsa_raw_signature_to_der(
   if (!ok) return false;
   *der = cursor;
   *der_size = static_cast<std::size_t>(written);
+  return true;
+}
+
+constexpr unsigned char kPrime256v1Oid[] = {0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07};
+
+// psa_export_key() on an EC key pair returns only the raw private scalar
+// (per the PSA spec's export format for ECC_KEY_PAIR), not a structure
+// mbedtls_pk_parse_key() can consume. Wrap it into a SEC1 ECPrivateKey DER
+// (RFC 5915) -- with the curve OID and public point included so mbedtls can
+// parse it standalone -- so the bytes stored are directly usable as a TLS
+// client key. RSA key pairs are unaffected: PSA's RSA export format is
+// already the DER-encoded RSAPrivateKey structure.
+bool ec_private_key_to_sec1_der(const unsigned char* scalar, std::size_t scalar_size,
+                                 const unsigned char* public_point, std::size_t public_point_size,
+                                 std::vector<unsigned char>* der) {
+  if (scalar == nullptr || scalar_size != 32 || public_point == nullptr ||
+      public_point_size == 0 || der == nullptr)
+    return false;
+  std::array<unsigned char, 192> buffer{};
+  auto* cursor = buffer.data() + buffer.size();
+  const auto* begin = buffer.data();
+  int written = 0;
+  int part;
+
+  part = mbedtls_asn1_write_bitstring(&cursor, begin, public_point,
+                                       public_point_size * 8);
+  if (part < 0) return false;
+  int public_key_inner = part;
+  part = mbedtls_asn1_write_len(&cursor, begin, static_cast<std::size_t>(public_key_inner));
+  if (part < 0) return false;
+  public_key_inner += part;
+  part = mbedtls_asn1_write_tag(&cursor, begin,
+      MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 1);
+  if (part < 0) return false;
+  written = public_key_inner + part;
+
+  part = mbedtls_asn1_write_oid(&cursor, begin,
+      reinterpret_cast<const char*>(kPrime256v1Oid), sizeof(kPrime256v1Oid));
+  if (part < 0) return false;
+  int parameters_inner = part;
+  part = mbedtls_asn1_write_len(&cursor, begin, static_cast<std::size_t>(parameters_inner));
+  if (part < 0) return false;
+  parameters_inner += part;
+  part = mbedtls_asn1_write_tag(&cursor, begin,
+      MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 0);
+  if (part < 0) return false;
+  written += parameters_inner + part;
+
+  part = mbedtls_asn1_write_octet_string(&cursor, begin, scalar, scalar_size);
+  if (part < 0) return false;
+  written += part;
+
+  part = mbedtls_asn1_write_int(&cursor, begin, 1);
+  if (part < 0) return false;
+  written += part;
+
+  part = mbedtls_asn1_write_len(&cursor, begin, static_cast<std::size_t>(written));
+  if (part < 0) return false;
+  written += part;
+  part = mbedtls_asn1_write_tag(&cursor, begin,
+      MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE);
+  if (part < 0) return false;
+  written += part;
+
+  der->assign(cursor, cursor + written);
   return true;
 }
 
@@ -138,15 +207,18 @@ bool validate_bundle(const PublicCredentialBundle& bundle) {
 }
 
 bool read_slot(nvs_handle_t nvs, std::uint8_t slot, PublicCredentialBundle* bundle,
-               std::vector<std::uint8_t>* key_der, std::uint32_t* generation, bool require_committed = true) {
+               std::vector<std::uint8_t>* key_der, std::uint32_t* generation, KeyAlgorithm* algorithm,
+               bool require_committed = true) {
   std::uint8_t committed = 0;
   std::uint32_t schema = 0;
+  std::uint8_t algorithm_code = 0;
   std::vector<std::uint8_t> cert, chain, cred, device, uuid;
   std::uint64_t not_before = 0, not_after = 0;
   const bool valid = nvs_get_u8(nvs, slot_name("commit", slot).c_str(), &committed) == ESP_OK &&
-      (!require_committed || committed == 0) &&
+      (!require_committed || committed == 1) &&
       nvs_get_u32(nvs, slot_name("schema", slot).c_str(), &schema) == ESP_OK && schema == 1 &&
       nvs_get_u32(nvs, slot_name("gen", slot).c_str(), generation) == ESP_OK && *generation > 0 &&
+      nvs_get_u8(nvs, slot_name("alg", slot).c_str(), &algorithm_code) == ESP_OK && algorithm_code <= 1 &&
       read_blob(nvs, slot_name("pkey", slot).c_str(), key_der) &&
       read_blob(nvs, slot_name("cert", slot).c_str(), &cert) && read_blob(nvs, slot_name("chain", slot).c_str(), &chain) &&
       read_blob(nvs, slot_name("cred", slot).c_str(), &cred) && read_blob(nvs, slot_name("device", slot).c_str(), &device) &&
@@ -154,6 +226,7 @@ bool read_slot(nvs_handle_t nvs, std::uint8_t slot, PublicCredentialBundle* bund
       nvs_get_u64(nvs, slot_name("before", slot).c_str(), &not_before) == ESP_OK &&
       nvs_get_u64(nvs, slot_name("after", slot).c_str(), &not_after) == ESP_OK;
   if (!valid) return false;
+  *algorithm = algorithm_code == 0 ? KeyAlgorithm::kEcP256 : KeyAlgorithm::kRsa3072;
   *bundle = {std::string(cred.begin(), cred.end()), std::string(cert.begin(), cert.end()),
              {std::string(chain.begin(), chain.end())},
              {std::string(device.begin(), device.end()), {std::string(uuid.begin(), uuid.end())}},
@@ -316,13 +389,22 @@ SecurityStatus EspDevelopmentCredentialStorage::status() const {
 }
 
 bool EspDevelopmentCredentialStorage::stage(const PrivateKeyHandle& key, const PublicCredentialBundle& bundle) {
-  if (status() != SecurityStatus::kReady || !current_key(key) || !validate_bundle(bundle) ||
-      !certificate_matches_current_key(bundle.certificate_pem)) return false;
+  const bool preconditions = status() == SecurityStatus::kReady && current_key(key) &&
+      validate_bundle(bundle) && certificate_matches_current_key(bundle.certificate_pem);
+  ESP_LOGD(kReloadDiagTag,
+           "stage_enter status=%d current_key=%d validate_bundle=%d cert_matches=%d",
+           static_cast<int>(status()), current_key(key), validate_bundle(bundle),
+           certificate_matches_current_key(bundle.certificate_pem));
+  if (!preconditions) return false;
   std::array<unsigned char, kPrivateKeyExportMax> private_der{};
   std::size_t private_size = 0;
-  if (psa_export_key(g_key.id, private_der.data(), private_der.size(), &private_size) != PSA_SUCCESS || private_size == 0) return false;
+  const psa_status_t exported = psa_export_key(g_key.id, private_der.data(), private_der.size(), &private_size);
+  ESP_LOGD(kReloadDiagTag, "stage_export status=%ld size=%u", static_cast<long>(exported),
+           static_cast<unsigned>(private_size));
+  if (exported != PSA_SUCCESS || private_size == 0) return false;
   nvs_handle_t nvs{};
   const esp_err_t opened = nvs_open(kNamespace, NVS_READWRITE, &nvs);
+  ESP_LOGD(kReloadDiagTag, "stage_nvs_open=%d", opened);
   std::uint8_t active_slot = 0;
   std::uint32_t active_generation = 0;
   if (opened == ESP_OK) {
@@ -336,6 +418,8 @@ bool EspDevelopmentCredentialStorage::stage(const PrivateKeyHandle& key, const P
       nvs_set_u8(nvs, slot_name("commit", inactive_slot).c_str(), 0) == ESP_OK &&
       nvs_set_u32(nvs, slot_name("schema", inactive_slot).c_str(), 1) == ESP_OK &&
       nvs_set_u32(nvs, slot_name("gen", inactive_slot).c_str(), next_generation) == ESP_OK &&
+      nvs_set_u8(nvs, slot_name("alg", inactive_slot).c_str(),
+                 g_key.algorithm == KeyAlgorithm::kEcP256 ? 0 : 1) == ESP_OK &&
       write_blob(nvs, slot_name("pkey", inactive_slot).c_str(), private_der.data(), private_size) &&
       write_blob(nvs, slot_name("cert", inactive_slot).c_str(), bundle.certificate_pem.data(), bundle.certificate_pem.size()) &&
       write_blob(nvs, slot_name("chain", inactive_slot).c_str(), bundle.ca_chain_pem.front().data(), bundle.ca_chain_pem.front().size()) &&
@@ -344,13 +428,18 @@ bool EspDevelopmentCredentialStorage::stage(const PrivateKeyHandle& key, const P
       write_blob(nvs, slot_name("uuid", inactive_slot).c_str(), bundle.identity.san_uris.front().data(), bundle.identity.san_uris.front().size()) &&
       nvs_set_u64(nvs, slot_name("before", inactive_slot).c_str(), bundle.not_before_epoch) == ESP_OK &&
       nvs_set_u64(nvs, slot_name("after", inactive_slot).c_str(), bundle.not_after_epoch) == ESP_OK && nvs_commit(nvs) == ESP_OK;
+  ESP_LOGD(kReloadDiagTag, "stage_written=%d inactive_slot=%u next_generation=%lu", written,
+           inactive_slot, static_cast<unsigned long>(next_generation));
   PublicCredentialBundle readback;
   std::vector<std::uint8_t> readback_key;
   std::uint32_t readback_generation = 0;
-  const bool readback_valid = written && read_slot(nvs, inactive_slot, &readback, &readback_key, &readback_generation, false) &&
+  KeyAlgorithm readback_algorithm = KeyAlgorithm::kEcP256;
+  const bool readback_valid = written &&
+      read_slot(nvs, inactive_slot, &readback, &readback_key, &readback_generation, &readback_algorithm, false) &&
       readback_generation == next_generation && readback.certificate_pem == bundle.certificate_pem;
   wipe(readback_key.data(), readback_key.size());
   const bool committed = readback_valid && nvs_set_u8(nvs, slot_name("commit", inactive_slot).c_str(), 1) == ESP_OK && nvs_commit(nvs) == ESP_OK;
+  ESP_LOGD(kReloadDiagTag, "stage_readback_valid=%d committed=%d", readback_valid, committed);
   if (opened == ESP_OK) nvs_close(nvs);
   wipe(private_der.data(), private_der.size());
   if (!committed) return false;
@@ -368,6 +457,8 @@ bool EspDevelopmentCredentialStorage::activate_staged() {
       nvs_get_u32(nvs, slot_name("gen", pending_slot).c_str(), &generation) == ESP_OK &&
       nvs_set_u8(nvs, "active_slot", pending_slot) == ESP_OK && nvs_set_u32(nvs, "active_gen", generation) == ESP_OK &&
       nvs_erase_key(nvs, "pending_slot") == ESP_OK && nvs_commit(nvs) == ESP_OK;
+  ESP_LOGD(kReloadDiagTag, "activate_staged pending_present=%d activated=%d",
+           impl_->pending.has_value(), activated);
   if (nvs != 0) nvs_close(nvs);
   if (activated) {
     impl_->active = std::move(impl_->pending);
@@ -381,51 +472,81 @@ void EspDevelopmentCredentialStorage::discard_staged() {
 }
 std::optional<PublicCredentialBundle> EspDevelopmentCredentialStorage::active_public_bundle() const { return impl_->active; }
 bool EspDevelopmentCredentialStorage::reload_active_identity() {
-  if (status() != SecurityStatus::kReady || psa_crypto_init() != PSA_SUCCESS) return false;
+  ESP_LOGD(kReloadDiagTag, "enter status=%d", static_cast<int>(status()));
+  if (status() != SecurityStatus::kReady) return false;
+  const psa_status_t crypto_init = psa_crypto_init();
+  ESP_LOGD(kReloadDiagTag, "psa_crypto_init=%ld", static_cast<long>(crypto_init));
+  if (crypto_init != PSA_SUCCESS) return false;
   nvs_handle_t nvs{};
   std::uint8_t active_slot = 0;
   std::uint32_t pointer_generation = 0;
-  if (nvs_open(kNamespace, NVS_READONLY, &nvs) != ESP_OK) {
+  const esp_err_t open_err = nvs_open(kNamespace, NVS_READONLY, &nvs);
+  ESP_LOGD(kReloadDiagTag, "nvs_open=%d", open_err);
+  if (open_err != ESP_OK) {
     if (nvs != 0) nvs_close(nvs);
     return false;
   }
   std::vector<std::uint8_t> key_der;
   PublicCredentialBundle bundle;
   std::uint32_t generation = 0;
+  KeyAlgorithm algorithm = KeyAlgorithm::kEcP256;
   const bool pointer_ok = nvs_get_u8(nvs, "active_slot", &active_slot) == ESP_OK && active_slot < 2 &&
       nvs_get_u32(nvs, "active_gen", &pointer_generation) == ESP_OK;
-  bool read = pointer_ok && read_slot(nvs, active_slot, &bundle, &key_der, &generation) && generation == pointer_generation;
+  const bool primary_slot_read = pointer_ok && read_slot(nvs, active_slot, &bundle, &key_der, &generation, &algorithm);
+  bool read = primary_slot_read && generation == pointer_generation;
+  ESP_LOGD(kReloadDiagTag,
+           "primary pointer_ok=%d active_slot=%u pointer_gen=%lu "
+           "primary_slot_read=%d read_gen=%lu read=%d",
+           pointer_ok, active_slot, static_cast<unsigned long>(pointer_generation),
+           primary_slot_read, static_cast<unsigned long>(generation), read);
   if (!read) {
     std::vector<std::uint8_t> alternative_key;
     PublicCredentialBundle alternative;
     std::uint32_t alternative_generation = 0;
+    KeyAlgorithm alternative_algorithm = KeyAlgorithm::kEcP256;
     for (std::uint8_t slot = 0; slot < 2; ++slot) {
       std::vector<std::uint8_t> candidate_key;
       PublicCredentialBundle candidate;
       std::uint32_t candidate_generation = 0;
-      if (read_slot(nvs, slot, &candidate, &candidate_key, &candidate_generation) &&
+      KeyAlgorithm candidate_algorithm = KeyAlgorithm::kEcP256;
+      if (read_slot(nvs, slot, &candidate, &candidate_key, &candidate_generation, &candidate_algorithm) &&
           (!read || candidate_generation > alternative_generation)) {
         wipe(alternative_key.data(), alternative_key.size());
-        alternative_key = std::move(candidate_key); alternative = std::move(candidate); alternative_generation = candidate_generation; read = true;
+        alternative_key = std::move(candidate_key); alternative = std::move(candidate);
+        alternative_generation = candidate_generation; alternative_algorithm = candidate_algorithm; read = true;
       } else wipe(candidate_key.data(), candidate_key.size());
     }
-    if (read) { key_der = std::move(alternative_key); bundle = std::move(alternative); generation = alternative_generation; }
+    if (read) { key_der = std::move(alternative_key); bundle = std::move(alternative); generation = alternative_generation; algorithm = alternative_algorithm; }
+    ESP_LOGD(kReloadDiagTag, "fallback_scan read=%d generation=%lu", read,
+             static_cast<unsigned long>(generation));
   }
   nvs_close(nvs);
   if (!read) { wipe(key_der.data(), key_der.size()); return false; }
   clear_volatile_key();
   psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
-  psa_set_key_type(&attributes, PSA_KEY_TYPE_RSA_KEY_PAIR);
-  psa_set_key_bits(&attributes, kRsaBits);
+  const bool ec = algorithm == KeyAlgorithm::kEcP256;
+  psa_set_key_type(&attributes, ec
+      ? PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1)
+      : PSA_KEY_TYPE_RSA_KEY_PAIR);
+  psa_set_key_bits(&attributes, ec ? kEcBits : kRsaBits);
   psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_MESSAGE | PSA_KEY_USAGE_EXPORT);
-  psa_set_key_algorithm(&attributes, PSA_ALG_RSA_PKCS1V15_SIGN(PSA_ALG_SHA_256));
+  psa_set_key_algorithm(&attributes, ec
+      ? PSA_ALG_ECDSA(PSA_ALG_SHA_256)
+      : PSA_ALG_RSA_PKCS1V15_SIGN(PSA_ALG_SHA_256));
   const psa_status_t imported = psa_import_key(&attributes, key_der.data(), key_der.size(), &g_key.id);
   psa_reset_key_attributes(&attributes);
+  ESP_LOGD(kReloadDiagTag,
+           "import ec=%d key_der_size=%u imported_status=%ld",
+           ec, static_cast<unsigned>(key_der.size()), static_cast<long>(imported));
   wipe(key_der.data(), key_der.size());
   if (imported != PSA_SUCCESS) return false;
   g_key.handle = {1, g_key.handle.generation + 1};
+  g_key.algorithm = algorithm;
   g_key.active = true;
-  if (!validate_bundle(bundle) || !certificate_matches_current_key(bundle.certificate_pem)) {
+  const bool bundle_valid = validate_bundle(bundle);
+  const bool cert_matches = bundle_valid && certificate_matches_current_key(bundle.certificate_pem);
+  ESP_LOGD(kReloadDiagTag, "verify bundle_valid=%d cert_matches=%d", bundle_valid, cert_matches);
+  if (!bundle_valid || !cert_matches) {
     clear_volatile_key();
     return false;
   }
@@ -433,16 +554,27 @@ bool EspDevelopmentCredentialStorage::reload_active_identity() {
   return true;
 }
 std::optional<SoftwareTlsIdentity> EspDevelopmentCredentialStorage::software_tls_identity() {
+  ESP_LOGD(kReloadDiagTag, "tls_identity_enter status=%d active_present=%d",
+           static_cast<int>(status()), impl_->active.has_value());
   if (status() != SecurityStatus::kReady && status() != SecurityStatus::kExpired) return std::nullopt;
   if (!impl_->active.has_value() && !reload_active_identity()) return std::nullopt;
   nvs_handle_t nvs{};
   std::uint8_t active_slot = 0;
   std::uint32_t ignored_generation = 0;
+  KeyAlgorithm ignored_algorithm = KeyAlgorithm::kEcP256;
   std::vector<std::uint8_t> key_der;
   PublicCredentialBundle bundle;
-  const bool loaded = nvs_open(kNamespace, NVS_READONLY, &nvs) == ESP_OK &&
-      nvs_get_u8(nvs, "active_slot", &active_slot) == ESP_OK && active_slot < 2 &&
-      read_slot(nvs, active_slot, &bundle, &key_der, &ignored_generation);
+  const esp_err_t tls_open_err = nvs_open(kNamespace, NVS_READONLY, &nvs);
+  const esp_err_t tls_slot_err = tls_open_err == ESP_OK
+      ? nvs_get_u8(nvs, "active_slot", &active_slot) : ESP_FAIL;
+  const bool tls_slot_valid = tls_open_err == ESP_OK && tls_slot_err == ESP_OK && active_slot < 2;
+  const bool tls_read_slot_ok = tls_slot_valid &&
+      read_slot(nvs, active_slot, &bundle, &key_der, &ignored_generation, &ignored_algorithm);
+  const bool loaded = tls_read_slot_ok;
+  ESP_LOGD(kReloadDiagTag,
+           "tls_identity_reread open_err=%d slot_err=%d active_slot=%u "
+           "slot_valid=%d read_slot_ok=%d loaded=%d",
+           tls_open_err, tls_slot_err, active_slot, tls_slot_valid, tls_read_slot_ok, loaded);
   if (nvs != 0) nvs_close(nvs);
   if (!loaded || !validate_bundle(bundle) || !certificate_matches_current_key(bundle.certificate_pem)) {
     wipe(key_der.data(), key_der.size());
@@ -453,8 +585,28 @@ std::optional<SoftwareTlsIdentity> EspDevelopmentCredentialStorage::software_tls
   identity.ca_certificate.push_back(0);
   identity.client_certificate.assign(bundle.certificate_pem.begin(), bundle.certificate_pem.end());
   identity.client_certificate.push_back(0);
-  identity.client_private_key.assign(key_der.begin(), key_der.end());
+  std::vector<unsigned char> client_key_der(key_der.begin(), key_der.end());
+  if (g_key.algorithm == KeyAlgorithm::kEcP256) {
+    std::array<unsigned char, 65> public_point{};
+    std::size_t public_point_size = 0;
+    const psa_status_t exported_public = psa_export_public_key(
+        g_key.id, public_point.data(), public_point.size(), &public_point_size);
+    std::vector<unsigned char> sec1_der;
+    const bool wrapped = exported_public == PSA_SUCCESS &&
+        ec_private_key_to_sec1_der(key_der.data(), key_der.size(),
+                                    public_point.data(), public_point_size, &sec1_der);
+    ESP_LOGD(kReloadDiagTag, "tls_identity_ec_wrap exported_public=%ld wrapped=%d der_size=%u",
+             static_cast<long>(exported_public), wrapped,
+             static_cast<unsigned>(sec1_der.size()));
+    if (!wrapped) {
+      wipe(key_der.data(), key_der.size());
+      return std::nullopt;
+    }
+    client_key_der = std::move(sec1_der);
+  }
+  identity.client_private_key.assign(client_key_der.begin(), client_key_der.end());
   wipe(key_der.data(), key_der.size());
+  wipe(client_key_der.data(), client_key_der.size());
   identity.status = SecurityStatus::kReady;
   identity.software_private_key_in_use = true;
   identity.ds_data_absent = true;
