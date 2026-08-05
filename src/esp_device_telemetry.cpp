@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <cstdio>
 #include <ctime>
 #include <optional>
@@ -70,12 +71,24 @@ std::optional<std::string> utcNow() {
 }
 
 std::optional<std::time_t> parseUtc(std::string_view value) {
-  if (value.size() != 20 || value[4] != '-' || value[7] != '-' ||
+  // Accepts both the bare-seconds form this device itself emits
+  // ("...:SSZ", 20 chars) and the fractional-seconds form every client
+  // language's default ISO-8601 formatter produces ("...:SS.ssssssZ",
+  // e.g. Dart's DateTime.toIso8601String() or JS's Date.toISOString()) --
+  // only whole-second precision is meaningful here, so the fraction, if
+  // present, is validated but discarded.
+  if (value.size() < 20 || value[4] != '-' || value[7] != '-' ||
       value[10] != 'T' || value[13] != ':' || value[16] != ':' ||
-      value[19] != 'Z')
+      value.back() != 'Z')
     return std::nullopt;
+  if (value.size() > 20) {
+    if (value[19] != '.') return std::nullopt;
+    for (std::size_t index = 20; index + 1 < value.size(); ++index)
+      if (!std::isdigit(static_cast<unsigned char>(value[index])))
+        return std::nullopt;
+  }
   std::tm parsed{};
-  if (std::sscanf(std::string{value}.c_str(), "%4d-%2d-%2dT%2d:%2d:%2dZ",
+  if (std::sscanf(std::string{value}.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d",
                   &parsed.tm_year, &parsed.tm_mon, &parsed.tm_mday,
                   &parsed.tm_hour, &parsed.tm_min, &parsed.tm_sec) != 6)
     return std::nullopt;

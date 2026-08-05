@@ -1039,6 +1039,8 @@ void input_task(void*) {
 void credential_bootstrap_task(void*) {
 #if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
   bool restoredIdentityChecked = false;
+  bool clockTrusted = false;
+  TickType_t nextClockRetryTick = 0;
 #endif
   while (true) {
     if (wifi_connection_runtime.state() !=
@@ -1082,14 +1084,22 @@ void credential_bootstrap_task(void*) {
 #endif
     }
 #if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
+    // Only the fresh QR bootstrap path used to sync the clock. A restored
+    // (already-paired) device reconnecting after any reboot never went
+    // through that path, and the ESP32 has no battery-backed RTC -- so
+    // without this, utcNow() (device_telemetry.hpp) would refuse to build
+    // any telemetry payload for the rest of this boot. Kept as its own,
+    // independently-retried check (10s backoff while untrusted) rather than
+    // folded into the one-shot block below, so a transient SNTP failure
+    // (e.g. DNS not yet ready right after association) doesn't strand the
+    // device without a clock for the rest of the session.
+    if (!clockTrusted && xTaskGetTickCount() >= nextClockRetryTick) {
+      clockTrusted = algaguard::ensureTrustedClock();
+      if (!clockTrusted)
+        nextClockRetryTick = xTaskGetTickCount() + pdMS_TO_TICKS(10000);
+    }
     if (!device_telemetry_runtime.started() && !restoredIdentityChecked) {
       restoredIdentityChecked = true;
-      // Only the fresh QR bootstrap path used to sync the clock. A restored
-      // (already-paired) device reconnecting after any reboot never went
-      // through that path, and the ESP32 has no battery-backed RTC -- so
-      // without this, utcNow() (device_telemetry.hpp) would refuse to build
-      // any telemetry payload for the rest of this boot.
-      const bool clockTrusted = algaguard::ensureTrustedClock();
       const auto identity = qr_credential_storage.software_tls_identity();
       const auto& config = algaguard::active_firmware_config();
       const algaguard::BrokerEndpoint broker{
