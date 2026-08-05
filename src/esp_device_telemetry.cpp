@@ -69,6 +69,22 @@ std::optional<std::string> utcNow() {
   return std::string{output};
 }
 
+std::optional<std::time_t> parseUtc(std::string_view value) {
+  if (value.size() != 20 || value[4] != '-' || value[7] != '-' ||
+      value[10] != 'T' || value[13] != ':' || value[16] != ':' ||
+      value[19] != 'Z')
+    return std::nullopt;
+  std::tm parsed{};
+  if (std::sscanf(std::string{value}.c_str(), "%4d-%2d-%2dT%2d:%2d:%2dZ",
+                  &parsed.tm_year, &parsed.tm_mon, &parsed.tm_mday,
+                  &parsed.tm_hour, &parsed.tm_min, &parsed.tm_sec) != 6)
+    return std::nullopt;
+  parsed.tm_year -= 1900;
+  parsed.tm_mon -= 1;
+  const auto epoch = timegm(&parsed);
+  return epoch > 0 ? std::optional<std::time_t>{epoch} : std::nullopt;
+}
+
 }  // namespace
 
 struct EspDeviceTelemetryRuntime::Impl {
@@ -86,6 +102,9 @@ struct EspDeviceTelemetryRuntime::Impl {
   SemaphoreHandle_t mutex{xSemaphoreCreateMutexStatic(&mutexStorage)};
   std::atomic_bool connected{};
   std::atomic_bool profileInstalled{};
+  std::atomic_bool unpairPending{};
+  std::string unpairCommandId;
+  std::time_t unpairExpiresAt{};
   std::uint64_t lastPublishMs{};
 
   ~Impl() {
@@ -121,7 +140,7 @@ struct EspDeviceTelemetryRuntime::Impl {
         "\",\"reportedAt\":\"" + *now + "\"";
     if (!code.empty())
       body += ",\"error\":{\"code\":\"" + std::string{code} +
-              "\",\"message\":\"Profile configuration was rejected\","
+              "\",\"message\":\"Command was rejected\"," 
               "\"retryable\":false}";
     body += "}}";
     (void)publish(commandResultTopic, body);
@@ -137,6 +156,34 @@ struct EspDeviceTelemetryRuntime::Impl {
     const auto configurationId = jsonString(payload, "configurationId");
     const auto profileId = jsonString(payload, "profileId");
     const auto profileVersion = jsonString(payload, "profileVersion");
+    const auto expiresAt = jsonString(payload, "expiresAt");
+    if (schema &&
+        *schema == "urn:algaguard:schema:mqtt:physical-unpair-command:v1" &&
+        schemaVersion && *schemaVersion == "1.0.0" && returnedDevice &&
+        *returnedDevice == deviceId && commandId && valid_uuid(*commandId) &&
+        commandType && *commandType == "REQUEST_PHYSICAL_UNPAIR" &&
+        expiresAt) {
+      const auto expiry = parseUtc(*expiresAt);
+      std::time_t current{};
+      std::time(&current);
+      if (!expiry || current <= 0 || *expiry <= current ||
+          *expiry > current + 300 || !lock()) {
+        commandResult(*commandId, "REJECTED", "INVALID_OR_EXPIRED_UNPAIR");
+        return;
+      }
+      if (unpairPending.load(std::memory_order_acquire)) {
+        unlock();
+        commandResult(*commandId, "REJECTED", "UNPAIR_ALREADY_PENDING");
+        return;
+      }
+      unpairCommandId = *commandId;
+      unpairExpiresAt = *expiry;
+      unpairPending.store(true, std::memory_order_release);
+      unlock();
+      commandResult(*commandId, "IN_PROGRESS");
+      ESP_LOGI(kTag, "PHYSICAL_UNPAIR_WAITING_FOR_LOCAL_CONFIRMATION");
+      return;
+    }
     if (!schema || *schema != "urn:algaguard:schema:mqtt:command:v1" ||
         !schemaVersion || *schemaVersion != "1.0.0" || !returnedDevice ||
         *returnedDevice != deviceId || !commandId ||
@@ -159,6 +206,31 @@ struct EspDeviceTelemetryRuntime::Impl {
     }
     commandResult(*commandId, "SUCCEEDED");
     ESP_LOGI(kTag, "MQTT_PROFILE_CONFIGURATION_ACTIVE source=AUTHORIZED_COMMAND");
+  }
+
+  bool finishUnpair(std::string_view status, std::string_view code = {}) {
+    if (!lock()) return false;
+    if (!unpairPending.load(std::memory_order_acquire) ||
+        unpairCommandId.empty()) {
+      unlock();
+      return false;
+    }
+    const auto commandId = unpairCommandId;
+    std::fill(unpairCommandId.begin(), unpairCommandId.end(), '\0');
+    unpairCommandId.clear();
+    unpairExpiresAt = 0;
+    unpairPending.store(false, std::memory_order_release);
+    unlock();
+    commandResult(commandId, status, code);
+    return true;
+  }
+
+  void expireUnpair() {
+    if (!unpairPending.load(std::memory_order_acquire)) return;
+    std::time_t current{};
+    std::time(&current);
+    if (current > 0 && current >= unpairExpiresAt)
+      (void)finishUnpair("EXPIRED", "PHYSICAL_CONFIRMATION_EXPIRED");
   }
 
   void receiveAck(std::string_view payload) {
@@ -285,6 +357,7 @@ bool EspDeviceTelemetryRuntime::start(std::string deviceId,
 
 void EspDeviceTelemetryRuntime::poll(const LocalDemoReading& reading,
                                      std::uint64_t uptimeMs) {
+  impl_->expireUnpair();
   if (!impl_->connected.load(std::memory_order_acquire) ||
       !impl_->profileInstalled.load(std::memory_order_acquire) ||
       !impl_->lock())
@@ -328,6 +401,20 @@ bool EspDeviceTelemetryRuntime::connected() const {
 bool EspDeviceTelemetryRuntime::started() const { return impl_->client != nullptr; }
 bool EspDeviceTelemetryRuntime::profileInstalled() const {
   return impl_->profileInstalled.load(std::memory_order_acquire);
+}
+
+bool EspDeviceTelemetryRuntime::physicalUnpairPending() const {
+  return impl_->unpairPending.load(std::memory_order_acquire);
+}
+
+bool EspDeviceTelemetryRuntime::confirmPhysicalUnpair(bool localStateCleared) {
+  return localStateCleared
+             ? impl_->finishUnpair("SUCCEEDED")
+             : impl_->finishUnpair("FAILED", "LOCAL_STATE_CLEAR_FAILED");
+}
+
+bool EspDeviceTelemetryRuntime::cancelPhysicalUnpair() {
+  return impl_->finishUnpair("REJECTED", "PHYSICAL_CONFIRMATION_CANCELLED");
 }
 
 }  // namespace algaguard

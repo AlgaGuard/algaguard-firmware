@@ -25,6 +25,9 @@ class EspDeviceTelemetryRuntime {
   bool started() const;
   bool connected() const;
   bool profileInstalled() const;
+  bool physicalUnpairPending() const;
+  bool confirmPhysicalUnpair(bool localStateCleared);
+  bool cancelPhysicalUnpair();
 
  private:
   struct Impl;
