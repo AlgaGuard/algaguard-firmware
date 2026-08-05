@@ -1084,6 +1084,12 @@ void credential_bootstrap_task(void*) {
 #if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
     if (!device_telemetry_runtime.started() && !restoredIdentityChecked) {
       restoredIdentityChecked = true;
+      // Only the fresh QR bootstrap path used to sync the clock. A restored
+      // (already-paired) device reconnecting after any reboot never went
+      // through that path, and the ESP32 has no battery-backed RTC -- so
+      // without this, utcNow() (device_telemetry.hpp) would refuse to build
+      // any telemetry payload for the rest of this boot.
+      const bool clockTrusted = algaguard::ensureTrustedClock();
       const auto identity = qr_credential_storage.software_tls_identity();
       const auto& config = algaguard::active_firmware_config();
       const algaguard::BrokerEndpoint broker{
@@ -1093,8 +1099,9 @@ void credential_bootstrap_task(void*) {
           std::string{config.device_id}, broker, *identity);
       ESP_LOGI(kTag,
                "RESTORED_DEVICE_CLOUD_START attempted=true identityPresent=%s "
-               "mqttStarted=%s privateKeyExported=false",
-               identity ? "true" : "false", mqttStarted ? "true" : "false");
+               "mqttStarted=%s clockTrusted=%s privateKeyExported=false",
+               identity ? "true" : "false", mqttStarted ? "true" : "false",
+               clockTrusted ? "true" : "false");
     }
 #endif
     vTaskDelay(pdMS_TO_TICKS(500));

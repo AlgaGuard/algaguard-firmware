@@ -10,6 +10,13 @@
 
 namespace algaguard {
 
+// Synchronizes the system clock via SNTP if it isn't already trusted
+// (>= 2024-01-01 UTC). The ESP32 has no battery-backed RTC, so every reboot
+// loses the clock; this is used both during QR bootstrap and by a restored
+// (already-paired) device on every boot, since utcNow() (device_telemetry.hpp)
+// refuses to build a telemetry payload without a trusted clock.
+bool ensureTrustedClock();
+
 class EspQrCredentialBootstrapTransport final
     : public QrCredentialBootstrapTransport {
  public:

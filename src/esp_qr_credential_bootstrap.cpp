@@ -20,17 +20,16 @@
 #include "freertos/FreeRTOS.h"
 
 namespace algaguard {
-namespace {
-constexpr std::size_t kMaximumResponseBytes = 24U * 1024U;
-constexpr std::time_t kMinimumTrustedUnixTime = 1704067200;  // 2024-01-01 UTC
-constexpr TickType_t kClockSyncTimeout = pdMS_TO_TICKS(15000);
 
-void wipe(std::string& value) {
-  std::fill(value.begin(), value.end(), '\0');
-  value.clear();
-}
-
+// Exposed beyond this file: a device that reconnects from a previously
+// bootstrapped identity (main.cpp's RESTORED_DEVICE_CLOUD_START path) never
+// runs QR bootstrap again, so it needs its own call to this to get a trusted
+// clock -- the ESP32 has no battery-backed RTC, so every reboot loses the
+// clock, and utcNow() (device_telemetry.hpp) refuses to build a telemetry
+// payload without one.
 bool ensureTrustedClock() {
+  constexpr std::time_t kMinimumTrustedUnixTime = 1704067200;  // 2024-01-01 UTC
+  constexpr TickType_t kClockSyncTimeout = pdMS_TO_TICKS(15000);
   std::time_t now{};
   std::time(&now);
   if (now >= kMinimumTrustedUnixTime) return true;
@@ -48,6 +47,14 @@ bool ensureTrustedClock() {
   if (!ready)
     ESP_LOGW("algaguard", "QR_CREDENTIAL_CLOCK_SYNC_FAILED stage=wait");
   return ready;
+}
+
+namespace {
+constexpr std::size_t kMaximumResponseBytes = 24U * 1024U;
+
+void wipe(std::string& value) {
+  std::fill(value.begin(), value.end(), '\0');
+  value.clear();
 }
 
 std::string jsonEscape(std::string_view value) {
