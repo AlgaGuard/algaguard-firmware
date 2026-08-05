@@ -358,9 +358,10 @@ bool EspDeviceTelemetryRuntime::start(std::string deviceId,
 void EspDeviceTelemetryRuntime::poll(const LocalDemoReading& reading,
                                      std::uint64_t uptimeMs) {
   impl_->expireUnpair();
-  if (!impl_->connected.load(std::memory_order_acquire) ||
-      !impl_->profileInstalled.load(std::memory_order_acquire) ||
-      !impl_->lock())
+  // Profile assignment routes threshold notifications; it must never gate
+  // whether real sensor readings reach the platform, so profileInstalled is
+  // deliberately not part of this condition.
+  if (!impl_->connected.load(std::memory_order_acquire) || !impl_->lock())
     return;
   if (impl_->window.exhausted(uptimeMs)) {
     impl_->window.clearPending();
@@ -377,15 +378,15 @@ void EspDeviceTelemetryRuntime::poll(const LocalDemoReading& reading,
     return;
   }
   const auto now = utcNow();
-  const auto profile = impl_->window.profile();
-  if (!now || !profile) {
+  if (!now) {
     impl_->unlock();
     return;
   }
   const std::string messageId = randomUuid();
   const std::string batchId = randomUuid();
   const auto payload = build_device_simulated_telemetry(
-      impl_->deviceId, *profile, reading, *now, messageId, batchId, uptimeMs);
+      impl_->deviceId, impl_->window.profile(), reading, *now, messageId,
+      batchId, uptimeMs);
   if (payload && impl_->window.begin(batchId, *payload, uptimeMs)) {
     impl_->lastPublishMs = uptimeMs;
     (void)impl_->publish(impl_->telemetryTopic, *payload);

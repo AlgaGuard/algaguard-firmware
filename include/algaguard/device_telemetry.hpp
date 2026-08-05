@@ -70,16 +70,32 @@ inline bool valid_utc_timestamp(std::string_view value) {
 }
 
 inline std::optional<std::string> build_device_simulated_telemetry(
-    std::string_view deviceId, const ActiveProfileReference& profile,
+    std::string_view deviceId, const std::optional<ActiveProfileReference>& profile,
     const LocalDemoReading& reading, std::string_view sentAt,
     std::string_view messageId, std::string_view batchId,
     std::uint64_t uptimeMs) {
-  if (!valid_telemetry_device_id(deviceId) || !valid_profile_reference(profile) ||
+  if (!valid_telemetry_device_id(deviceId) ||
+      (profile && !valid_profile_reference(*profile)) ||
       !valid_utc_timestamp(sentAt) || !valid_uuid(messageId) ||
       !valid_uuid(batchId) || reading.sequence == 0 || reading.ph < 0 ||
       reading.ph > 14 || reading.lightLux < 0 || reading.nitrateMgL < 0 ||
       reading.phosphateMgL < 0 || reading.potassiumMgL < 0)
     return std::nullopt;
+
+  // activeProfile is optional on the wire: a freshly-paired device with no
+  // profile installed yet still has real sensor readings to publish. Profile
+  // assignment's only purpose is routing threshold notifications, not
+  // gating whether telemetry reaches the platform.
+  char activeProfileFragment[160]{};
+  if (profile) {
+    const int fragmentWritten = std::snprintf(
+        activeProfileFragment, sizeof(activeProfileFragment),
+        "\"activeProfile\":{\"profileId\":\"%s\",\"profileVersion\":\"%s\"},",
+        profile->profileId.c_str(), profile->profileVersion.c_str());
+    if (fragmentWritten <= 0 ||
+        static_cast<std::size_t>(fragmentWritten) >= sizeof(activeProfileFragment))
+      return std::nullopt;
+  }
 
   char output[2048]{};
   const int written = std::snprintf(
@@ -88,8 +104,7 @@ inline std::optional<std::string> build_device_simulated_telemetry(
       "\"messageId\":\"%.*s\",\"deviceId\":\"%.*s\","
       "\"sentAt\":\"%.*s\",\"payload\":{\"batchId\":\"%.*s\","
       "\"firstSequence\":\"%llu\",\"lastSequence\":\"%llu\","
-      "\"sampleCount\":1,\"activeProfile\":{\"profileId\":\"%s\","
-      "\"profileVersion\":\"%s\"},\"samples\":[{\"sequence\":\"%llu\","
+      "\"sampleCount\":1,%s\"samples\":[{\"sequence\":\"%llu\","
       "\"observedAt\":\"%.*s\",\"timestampQuality\":\"NTP_SYNCED\","
       "\"uptimeMs\":\"%llu\",\"values\":{\"temperatureC\":%.2f,"
       "\"ph\":%.2f,\"lightLux\":%.0f,\"nitrateMgL\":%.2f,"
@@ -103,8 +118,7 @@ inline std::optional<std::string> build_device_simulated_telemetry(
       static_cast<int>(sentAt.size()), sentAt.data(),
       static_cast<int>(batchId.size()), batchId.data(),
       static_cast<unsigned long long>(reading.sequence),
-      static_cast<unsigned long long>(reading.sequence), profile.profileId.c_str(),
-      profile.profileVersion.c_str(),
+      static_cast<unsigned long long>(reading.sequence), activeProfileFragment,
       static_cast<unsigned long long>(reading.sequence),
       static_cast<int>(sentAt.size()), sentAt.data(),
       static_cast<unsigned long long>(uptimeMs), reading.temperatureC, reading.ph,
@@ -126,7 +140,7 @@ class DeviceTelemetryPublishWindow {
   }
   const std::optional<ActiveProfileReference>& profile() const { return profile_; }
   bool begin(std::string batchId, std::string payload, std::uint64_t nowMs) {
-    if (!profile_ || pending_ || !valid_uuid(batchId) || payload.empty() ||
+    if (pending_ || !valid_uuid(batchId) || payload.empty() ||
         payload.size() > 8192)
       return false;
     pending_ = Pending{std::move(batchId), std::move(payload), nowMs, 0};
