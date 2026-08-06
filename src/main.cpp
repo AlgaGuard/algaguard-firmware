@@ -918,15 +918,24 @@ void input_task(void*) {
         const bool identity_cleared =
             qr_credential_storage.confirmed_reset(true);
         qr_onboarding.clear();
+        // Send the completion acknowledgment over MQTT *before* tearing
+        // down WiFi. Clearing the NVS-persisted identity above doesn't
+        // touch the already-established MQTT/TLS session (that session
+        // runs on key material already copied into RAM at connect time),
+        // but resetting WiFi does kill the underlying transport outright --
+        // publishing after that point had nothing left to send over, so
+        // the SUCCEEDED result could never reach the broker and the
+        // command just sat until it expired, leaving the device correctly
+        // unpaired locally while the cloud never found out.
+        const bool result_queued =
+            device_telemetry_runtime.confirmPhysicalUnpair(identity_cleared);
+        if (result_queued) vTaskDelay(pdMS_TO_TICKS(800));
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
         physical_runtime_bridge.clear(wifi_connection_runtime,
                                       physical_session_installer);
 #else
         (void)wifi_connection_runtime.reset();
 #endif
-        const bool result_queued =
-            device_telemetry_runtime.confirmPhysicalUnpair(identity_cleared);
-        if (result_queued) vTaskDelay(pdMS_TO_TICKS(250));
         const bool wifi_cleared = wifi_connection_adapter.forgetSavedNetwork();
         qr_display_mode.store(QrDisplayMode::kPrompt,
                               std::memory_order_relaxed);
