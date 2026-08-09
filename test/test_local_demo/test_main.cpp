@@ -29,27 +29,24 @@ void test_local_demo_generator_is_deterministic_and_bounded() {
   }
 }
 
-void test_local_demo_menu_wraps_and_home_is_safe() {
-  algaguard::LocalDemoMenu menu;
-  TEST_ASSERT_EQUAL(0, menu.index());
-  menu.previous();
-  TEST_ASSERT_EQUAL(6, menu.index());
-  menu.next();
-  TEST_ASSERT_EQUAL(0, menu.index());
-  TEST_ASSERT_EQUAL(algaguard::LocalDemoAction::kNone, menu.select());
-  TEST_ASSERT_EQUAL(1, menu.index());
-  menu.home();
-  TEST_ASSERT_EQUAL(0, menu.index());
-}
-
+// Page selection/cycling now lives in main.cpp's MainMenuNav (the real
+// on-screen main menu) rather than in this header -- LocalDemoPage here is
+// just a content-page identifier passed straight into local_demo_screen().
 void test_local_demo_all_pages_are_safe_and_explicit() {
   const auto reading = algaguard::LocalDemoGenerator{}.next(1);
-  algaguard::LocalDemoMenu menu;
+  constexpr std::array<algaguard::LocalDemoPage, 6> pages{{
+      algaguard::LocalDemoPage::kTemperaturePh,
+      algaguard::LocalDemoPage::kLight,
+      algaguard::LocalDemoPage::kNutrients,
+      algaguard::LocalDemoPage::kDeviceStatus,
+      algaguard::LocalDemoPage::kNetwork,
+      algaguard::LocalDemoPage::kAbout,
+  }};
   bool sawLocal = false;
   bool sawOffline = false;
   bool sawNotConfigured = false;
-  for (unsigned page = 0; page < 7; ++page) {
-    const auto screen = algaguard::local_demo_screen(menu.page(), reading, true);
+  for (const auto page : pages) {
+    const auto screen = algaguard::local_demo_screen(page, reading, true);
     TEST_ASSERT_TRUE(screen.safe());
     for (const auto& line : screen.lines) {
       sawLocal = sawLocal || line.find("DEV GENERATED") != std::string::npos;
@@ -58,7 +55,6 @@ void test_local_demo_all_pages_are_safe_and_explicit() {
       TEST_ASSERT_EQUAL(std::string::npos, line.find("password"));
       TEST_ASSERT_EQUAL(std::string::npos, line.find("session"));
     }
-    menu.next();
   }
   TEST_ASSERT_TRUE(sawLocal);
   TEST_ASSERT_TRUE(sawOffline);
@@ -66,31 +62,29 @@ void test_local_demo_all_pages_are_safe_and_explicit() {
 }
 
 void test_local_demo_network_forget_requires_confirmation() {
-  algaguard::LocalDemoMenu menu;
-  for (unsigned page = 0; page < 5; ++page) menu.next();
-  TEST_ASSERT_EQUAL(algaguard::LocalDemoPage::kNetwork, menu.page());
-  TEST_ASSERT_EQUAL(algaguard::LocalDemoAction::kNone, menu.select());
+  algaguard::LocalDemoNetworkFlow flow;
+  TEST_ASSERT_EQUAL(algaguard::LocalDemoNetworkState::kReady, flow.networkState());
+  TEST_ASSERT_EQUAL(algaguard::LocalDemoAction::kNone, flow.select());
   TEST_ASSERT_EQUAL(algaguard::LocalDemoNetworkState::kConfirmForget,
-                    menu.networkState());
+                    flow.networkState());
   TEST_ASSERT_EQUAL(algaguard::LocalDemoAction::kForgetSavedWifi,
-                    menu.select());
-  menu.setForgetResult(true);
+                    flow.select());
+  flow.setForgetResult(true);
   TEST_ASSERT_EQUAL(algaguard::LocalDemoNetworkState::kForgotten,
-                    menu.networkState());
+                    flow.networkState());
   const auto screen = algaguard::local_demo_screen(
-      menu.page(), algaguard::LocalDemoGenerator{}.next(1), true, false,
-      false, true, menu.networkState());
+      algaguard::LocalDemoPage::kNetwork, algaguard::LocalDemoGenerator{}.next(1),
+      true, false, false, true, flow.networkState());
   TEST_ASSERT_TRUE(screen.safe());
   TEST_ASSERT_EQUAL(std::string::npos, screen.lines[0].find("password"));
-  menu.home();
-  TEST_ASSERT_EQUAL(algaguard::LocalDemoPage::kHome, menu.page());
+  flow.reset();
+  TEST_ASSERT_EQUAL(algaguard::LocalDemoNetworkState::kReady, flow.networkState());
 }
 
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_local_demo_guard_model);
   RUN_TEST(test_local_demo_generator_is_deterministic_and_bounded);
-  RUN_TEST(test_local_demo_menu_wraps_and_home_is_safe);
   RUN_TEST(test_local_demo_all_pages_are_safe_and_explicit);
   RUN_TEST(test_local_demo_network_forget_requires_confirmation);
   return UNITY_END();

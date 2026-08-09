@@ -54,6 +54,23 @@ inline void draw_pixel(Framebuffer& framebuffer, std::uint8_t x, std::uint8_t y)
   framebuffer[(y / 8U) * 128U + x] |= static_cast<std::uint8_t>(1U << (y % 8U));
 }
 
+// Mirrors draw_pixel but clears the bit -- used to "punch out" text against a
+// filled highlight bar (see draw_text's invert parameter) since the display
+// has no separate background layer to redraw over.
+inline void clear_pixel(Framebuffer& framebuffer, std::uint8_t x, std::uint8_t y) {
+  if (x >= 128 || y >= 64) return;
+  framebuffer[(y / 8U) * 128U + x] &=
+      static_cast<std::uint8_t>(~(1U << (y % 8U)));
+}
+
+inline void fill_rect(Framebuffer& framebuffer, std::uint8_t x, std::uint8_t y,
+                      std::uint8_t width, std::uint8_t height) {
+  for (std::uint8_t row = 0; row < height; ++row)
+    for (std::uint8_t column = 0; column < width; ++column)
+      draw_pixel(framebuffer, static_cast<std::uint8_t>(x + column),
+                static_cast<std::uint8_t>(y + row));
+}
+
 inline std::array<std::uint8_t, 5> glyph(char raw) {
   const char value =
       static_cast<char>(std::toupper(static_cast<unsigned char>(raw)));
@@ -87,8 +104,13 @@ inline std::array<std::uint8_t, 5> glyph(char raw) {
   return {{0, 0, 0, 0, 0}};
 }
 
+// `invert`, when true, clears glyph pixels instead of setting them -- used to
+// draw "punched out" text against a fill_rect'd highlight bar (the display
+// has no separate background layer, so this is the only way to get an
+// inverted-looking row on a 1bpp panel).
 inline void draw_text(Framebuffer& framebuffer, std::string_view text,
-                      std::uint8_t origin_x, std::uint8_t origin_y) {
+                      std::uint8_t origin_x, std::uint8_t origin_y,
+                      bool invert = false) {
   std::uint8_t x = origin_x;
   for (const char character : text) {
     if (x > 123) break;
@@ -98,7 +120,10 @@ inline void draw_text(Framebuffer& framebuffer, std::string_view text,
         if ((rows[row] & (1U << (2U - column))) == 0) continue;
         const auto pixel_x = static_cast<std::uint8_t>(x + column);
         const auto pixel_y = static_cast<std::uint8_t>(origin_y + row);
-        draw_pixel(framebuffer, pixel_x, pixel_y);
+        if (invert)
+          clear_pixel(framebuffer, pixel_x, pixel_y);
+        else
+          draw_pixel(framebuffer, pixel_x, pixel_y);
       }
     }
     x = static_cast<std::uint8_t>(x + 4U);
@@ -174,6 +199,67 @@ inline Framebuffer compose_screen(const DiagnosticScreen& screen) {
   for (std::uint8_t index = 1; index < screen.lines.size(); ++index)
     draw_text(framebuffer, screen.lines[index], 3,
               static_cast<std::uint8_t>(20U + (index - 1U) * 14U));
+  return framebuffer;
+}
+
+inline constexpr std::uint8_t kMenuVisibleRows = 4;
+inline constexpr std::uint8_t kMenuRowPitch = 11;
+inline constexpr std::uint8_t kMenuRowsTop = 19;
+
+// Deliberately decoupled from any concrete menu-item type: takes a plain
+// label array + count so this header stays a low-level drawing utility with
+// no dependency on main.cpp's menu content/ordering.
+inline Framebuffer compose_menu_screen(const char* const* labels,
+                                       std::size_t itemCount,
+                                       std::size_t selectedIndex) {
+  Framebuffer framebuffer{};
+  draw_frame_border(framebuffer);
+  draw_header_divider(framebuffer);
+  draw_text_scaled(framebuffer, "MENU", 3, 3, 2);
+
+  // Recomputed fresh from selectedIndex on every call (no persisted scroll
+  // state): if the selection is still within the first window it stays at
+  // offset 0, otherwise the window's bottom edge tracks the selection --
+  // this alone handles scrolling back up too, since offset returns to 0
+  // as soon as selectedIndex is inside [0, kMenuVisibleRows) again.
+  std::size_t offset = 0;
+  if (itemCount > kMenuVisibleRows) {
+    const std::size_t maxOffset = itemCount - kMenuVisibleRows;
+    if (selectedIndex >= kMenuVisibleRows)
+      offset = selectedIndex - kMenuVisibleRows + 1;
+    if (offset > maxOffset) offset = maxOffset;
+  }
+
+  const std::size_t visible = std::min<std::size_t>(
+      kMenuVisibleRows, itemCount - offset);
+  for (std::size_t row = 0; row < visible; ++row) {
+    const std::size_t item = offset + row;
+    const auto y = static_cast<std::uint8_t>(kMenuRowsTop + row * kMenuRowPitch);
+    const bool selected = item == selectedIndex;
+    if (selected) fill_rect(framebuffer, 2, static_cast<std::uint8_t>(y - 2),
+                            124, kMenuRowPitch - 1);
+    draw_text(framebuffer, labels[item], 5, y, selected);
+  }
+
+  // Small hand-drawn scroll-affordance triangles -- no font-table entry
+  // exists for arrow glyphs, so these are a few direct pixel calls instead.
+  if (offset > 0)
+    // Apex at (123,16), widening downward to a 5px base at y=18 -- points up.
+    for (std::uint8_t row = 0; row < 3; ++row)
+      for (std::uint8_t column = 0; column <= row * 2U; ++column)
+        draw_pixel(framebuffer,
+                  static_cast<std::uint8_t>(123 - row + column),
+                  static_cast<std::uint8_t>(16 + row));
+  if (offset + visible < itemCount)
+    // 5px base at y=59, narrowing to an apex at (123,61) -- points down.
+    for (std::uint8_t row = 0; row < 3; ++row) {
+      const auto width = static_cast<std::uint8_t>((2U - row) * 2U);
+      for (std::uint8_t column = 0; column <= width; ++column)
+        draw_pixel(framebuffer,
+                  static_cast<std::uint8_t>(123 - width / 2 + column),
+                  static_cast<std::uint8_t>(59 + row));
+    }
+
   return framebuffer;
 }
 

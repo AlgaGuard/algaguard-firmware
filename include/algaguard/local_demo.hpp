@@ -55,8 +55,10 @@ class LocalDemoGenerator {
   std::uint32_t seed_;
 };
 
+// kHome intentionally dropped: it was only ever a navigation-anchor
+// placeholder ("you're at the top level"), a role the real main menu screen
+// now fills directly.
 enum class LocalDemoPage : std::uint8_t {
-  kHome,
   kTemperaturePh,
   kLight,
   kNutrients,
@@ -74,22 +76,12 @@ enum class LocalDemoNetworkState : std::uint8_t {
 
 enum class LocalDemoAction : std::uint8_t { kNone, kForgetSavedWifi };
 
-class LocalDemoMenu {
+// Tracks just the Network screen's forget-WiFi confirmation sub-flow. Page
+// selection/cycling now lives in the main menu (main.cpp's MainMenuNav) --
+// this class no longer owns a "current page" concept.
+class LocalDemoNetworkFlow {
  public:
-  LocalDemoPage page() const { return pages_[index_]; }
-  void next() {
-    networkState_ = LocalDemoNetworkState::kReady;
-    index_ = (index_ + 1) % pages_.size();
-  }
-  void previous() {
-    networkState_ = LocalDemoNetworkState::kReady;
-    index_ = (index_ + pages_.size() - 1) % pages_.size();
-  }
   LocalDemoAction select() {
-    if (page() != LocalDemoPage::kNetwork) {
-      next();
-      return LocalDemoAction::kNone;
-    }
     if (networkState_ == LocalDemoNetworkState::kReady ||
         networkState_ == LocalDemoNetworkState::kForgotten ||
         networkState_ == LocalDemoNetworkState::kForgetFailed) {
@@ -102,20 +94,10 @@ class LocalDemoMenu {
     networkState_ = succeeded ? LocalDemoNetworkState::kForgotten
                               : LocalDemoNetworkState::kForgetFailed;
   }
-  void home() {
-    index_ = 0;
-    networkState_ = LocalDemoNetworkState::kReady;
-  }
-  std::size_t index() const { return index_; }
+  void reset() { networkState_ = LocalDemoNetworkState::kReady; }
   LocalDemoNetworkState networkState() const { return networkState_; }
 
  private:
-  static constexpr std::array<LocalDemoPage, 7> pages_{
-      LocalDemoPage::kHome,          LocalDemoPage::kTemperaturePh,
-      LocalDemoPage::kLight,         LocalDemoPage::kNutrients,
-      LocalDemoPage::kDeviceStatus,  LocalDemoPage::kNetwork,
-      LocalDemoPage::kAbout};
-  std::size_t index_{};
   LocalDemoNetworkState networkState_{LocalDemoNetworkState::kReady};
 };
 
@@ -140,8 +122,6 @@ inline DiagnosticScreen local_demo_screen(LocalDemoPage page,
   const char* const cloudState =
       cloudConnected ? "CLOUD CONNECTED" : "CLOUD NOT READY";
   switch (page) {
-    case LocalDemoPage::kHome:
-      return {{{"AlgaGuard", "DEVICE DATA MODE", wifiState, cloudState}}};
     case LocalDemoPage::kTemperaturePh:
       return {{{"DEMO TEMP PH",
                 local_demo_value("TEMP", reading.temperatureC, 2, " C"),

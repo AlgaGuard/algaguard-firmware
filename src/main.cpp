@@ -71,10 +71,85 @@ algaguard::DebouncedButton select_button;
 algaguard::DebouncedButton back_button;
 #if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
 algaguard::LocalDemoGenerator local_demo_generator;
-algaguard::LocalDemoMenu local_demo_menu;
+algaguard::LocalDemoNetworkFlow local_network_flow;
 algaguard::LocalDemoReading local_demo_reading{};
 portMUX_TYPE local_demo_lock = portMUX_INITIALIZER_UNLOCKED;
-std::uint32_t local_demo_revision{};
+
+// Unified OLED screen state, replacing the old QrDisplayMode/LocalDemoPage
+// dual-track navigation. Scoped to ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS since
+// both demo build targets (with and without QR onboarding) share this menu;
+// kPairDevice only appears in kMainMenuItems -- and is only ever entered --
+// when ALGAGUARD_ENABLE_QR_ONBOARDING is also defined.
+enum class AppScreen : std::uint8_t {
+  kMainMenu,
+  kPairDevice,
+  kTemperaturePh,
+  kLight,
+  kNutrients,
+  kDeviceStatus,
+  kNetwork,
+  kAbout,
+};
+std::atomic<AppScreen> current_screen{AppScreen::kMainMenu};
+// One counter for "the screen needs to be redrawn", bumped by every input
+// handler and by the sampling task when a sensor-content screen is visible.
+// Replaces the old local_demo_revision/qr_display_revision pair -- there's
+// only ever one screen on-panel at a time, so one counter is enough.
+std::atomic<std::uint32_t> screen_revision{};
+
+struct MainMenuItem {
+  const char* label;
+  AppScreen screen;
+};
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+constexpr std::array<MainMenuItem, 7> kMainMenuItems{{
+    {"PAIR DEVICE", AppScreen::kPairDevice},
+    {"TEMP AND PH", AppScreen::kTemperaturePh},
+    {"LIGHT", AppScreen::kLight},
+    {"NUTRIENTS", AppScreen::kNutrients},
+    {"DEVICE STATUS", AppScreen::kDeviceStatus},
+    {"NETWORK", AppScreen::kNetwork},
+    {"ABOUT", AppScreen::kAbout},
+}};
+#else
+constexpr std::array<MainMenuItem, 6> kMainMenuItems{{
+    {"TEMP AND PH", AppScreen::kTemperaturePh},
+    {"LIGHT", AppScreen::kLight},
+    {"NUTRIENTS", AppScreen::kNutrients},
+    {"DEVICE STATUS", AppScreen::kDeviceStatus},
+    {"NETWORK", AppScreen::kNetwork},
+    {"ABOUT", AppScreen::kAbout},
+}};
+#endif
+
+class MainMenuNav {
+ public:
+  void next() { index_ = (index_ + 1) % kMainMenuItems.size(); }
+  void previous() {
+    index_ = (index_ + kMainMenuItems.size() - 1) % kMainMenuItems.size();
+  }
+  std::size_t index() const { return index_; }
+
+ private:
+  std::size_t index_{};
+};
+MainMenuNav main_menu_nav;
+
+// The content screens (everything but kMainMenu/kPairDevice) share their
+// names 1:1 with LocalDemoPage, which local_demo_screen() already switches
+// on internally (including its own Network sub-state handling) -- this just
+// bridges the two enums so render_startup_state() can call it uniformly.
+algaguard::LocalDemoPage to_local_demo_page(AppScreen screen) {
+  switch (screen) {
+    case AppScreen::kTemperaturePh: return algaguard::LocalDemoPage::kTemperaturePh;
+    case AppScreen::kLight: return algaguard::LocalDemoPage::kLight;
+    case AppScreen::kNutrients: return algaguard::LocalDemoPage::kNutrients;
+    case AppScreen::kDeviceStatus: return algaguard::LocalDemoPage::kDeviceStatus;
+    case AppScreen::kNetwork: return algaguard::LocalDemoPage::kNetwork;
+    case AppScreen::kAbout:
+    default: return algaguard::LocalDemoPage::kAbout;
+  }
+}
 #endif
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
 algaguard::EspQrRandomSource qr_random;
@@ -93,9 +168,8 @@ algaguard::QrCredentialBootstrapCoordinator qr_credential_bootstrap{
 #if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
 algaguard::EspDeviceTelemetryRuntime device_telemetry_runtime;
 #endif
-enum class QrDisplayMode : std::uint8_t { kPrompt, kCode, kLocalDemo };
-std::atomic<QrDisplayMode> qr_display_mode{QrDisplayMode::kPrompt};
-std::atomic<std::uint32_t> qr_display_revision{};
+enum class PairDeviceSubMode : std::uint8_t { kPrompt, kCode };
+std::atomic<PairDeviceSubMode> pair_submode{PairDeviceSubMode::kPrompt};
 #endif
 algaguard::EspIdfBleProvisioningTransport ble_provisioning_transport;
 algaguard::EspIdfWifiConnectionAdapter wifi_connection_adapter;
@@ -166,8 +240,7 @@ bool has_last_rendered_framebuffer{};
 constexpr std::uint8_t kScreenTransitionSteps = 4;
 constexpr std::uint32_t kScreenTransitionStepMs = 16;
 
-esp_err_t render_screen_animated(const algaguard::DiagnosticScreen& screen) {
-  const Framebuffer target = compose_screen(screen);
+esp_err_t render_framebuffer_animated(const Framebuffer& target) {
   if (!has_last_rendered_framebuffer) {
     has_last_rendered_framebuffer = true;
     last_rendered_framebuffer = target;
@@ -183,6 +256,10 @@ esp_err_t render_screen_animated(const algaguard::DiagnosticScreen& screen) {
   }
   last_rendered_framebuffer = target;
   return result;
+}
+
+esp_err_t render_screen_animated(const algaguard::DiagnosticScreen& screen) {
+  return render_framebuffer_animated(compose_screen(screen));
 }
 
 void configure_gpio() {
@@ -262,11 +339,12 @@ esp_err_t configure_oled_i2c() {
 }
 
 // Boot splash: the logo wipes in top-to-bottom and the wordmark settles in
-// as the reveal completes, spending roughly the same time budget the old
-// static splash used to hold for -- see the shortened post-splash hold in
-// EspFoundationServices::display_init() below.
+// as the reveal completes (~440ms), then holds on the finished mark for
+// kSplashHoldMs (see EspFoundationServices::display_init() below) before the
+// main menu takes over -- total boot-screen time is ~4s as requested.
 constexpr std::uint8_t kSplashSteps = 8;
 constexpr std::uint32_t kSplashStepMs = 55;
+constexpr std::uint32_t kSplashHoldMs = 3600;
 
 esp_err_t render_brand_splash() {
   esp_err_t result = ESP_OK;
@@ -457,10 +535,10 @@ class EspFoundationServices final : public algaguard::StartupServices {
     if (render_brand_splash() != ESP_OK)
       return {algaguard::OperationStatus::kRecoverableFailure,
               algaguard::StartupReason::kModuleUnavailable};
-    // render_brand_splash() already spent ~kSplashSteps*kSplashStepMs animating
-    // the reveal; this hold just keeps the finished mark on screen a beat
-    // longer before the first status screen wipes in over it.
-    oled_splash_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(300);
+    // render_brand_splash() already spent ~kSplashSteps*kSplashStepMs
+    // animating the reveal; this hold keeps the finished mark on screen
+    // for the rest of the ~4s boot screen before the main menu takes over.
+    oled_splash_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(kSplashHoldMs);
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
     const auto preflight = algaguard::physical_board_preflight(
         {board_.chip_is_esp32s3, board_.flash_bytes, board_.psram_available,
@@ -468,22 +546,13 @@ class EspFoundationServices final : public algaguard::StartupServices {
     if (!preflight.displayValidated)
       return {algaguard::OperationStatus::kRecoverableFailure,
               algaguard::StartupReason::kModuleUnavailable};
-    const auto screen =
-        algaguard::physical_test_screen(algaguard::PhysicalTestState::kBleAdvertisingInitializing);
     ESP_LOGW(kTag, "INSECURE DEVELOPMENT PHYSICAL TEST MODE preflight=%u",
              static_cast<unsigned>(preflight.reason));
-    (void)screen;
     return {algaguard::OperationStatus::kSuccess};
 #else
-    const auto boot =
-        algaguard::boot_screen(algaguard::active_firmware_config());
-    auto screen = boot;
 #if defined(ALGAGUARD_SECURITY_PROFILE_DEV_SOFTWARE_KEY)
-    screen.lines[2] = "INSECURE DEV KEY";
-    screen.lines[3] = "DEV SOFTWARE KEY";
     ESP_LOGW(kTag, "security_profile=DEV_SOFTWARE_KEY warning=SOFTWARE_PRIVATE_KEY_IN_USE");
 #endif
-    (void)screen;
     return {algaguard::OperationStatus::kSuccess};
 #endif
   }
@@ -570,36 +639,51 @@ void render_startup_state() {
   }
   if (last_unpair_pending) {
     last_unpair_pending = false;
-    qr_display_revision.fetch_add(1, std::memory_order_release);
+    screen_revision.fetch_add(1, std::memory_order_release);
   }
 #endif
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
   static auto last_physical_state = static_cast<algaguard::PhysicalTestState>(255);
 #endif
 #if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
-  static std::uint32_t last_demo_revision = UINT32_MAX;
+  static std::uint32_t last_revision = UINT32_MAX;
   if (startup.state() >= algaguard::StartupState::kInputInit) {
-    algaguard::LocalDemoReading reading{};
-    algaguard::LocalDemoPage page{};
-    std::uint32_t revision{};
-    portENTER_CRITICAL(&local_demo_lock);
-    reading = local_demo_reading;
-    page = local_demo_menu.page();
-    revision = local_demo_revision;
-    portEXIT_CRITICAL(&local_demo_lock);
-    #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+    const auto screen = current_screen.load(std::memory_order_relaxed);
+    const bool wifi_connected =
+        wifi_connection_runtime.state() == algaguard::WifiConnectionState::kConnected;
+#if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
+    const bool cloud_connected = device_telemetry_runtime.connected();
+#else
+    constexpr bool cloud_connected = false;
+#endif
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
     const auto qrNow = static_cast<std::uint32_t>(xTaskGetTickCount() / configTICK_RATE_HZ);
     qr_onboarding.tick(qrNow);
-    const auto display_revision =
-        qr_display_revision.load(std::memory_order_acquire);
-    const auto display_mode = qr_display_mode.load(std::memory_order_relaxed);
-    if (display_mode != QrDisplayMode::kLocalDemo) {
-      const auto combinedRevision =
-          revision + display_revision +
-          (static_cast<std::uint32_t>(qr_onboarding.state()) << 16U);
-      if (combinedRevision == last_demo_revision) return;
-      last_demo_revision = combinedRevision;
-      esp_err_t result = ESP_OK;
+#endif
+    auto revision = screen_revision.load(std::memory_order_acquire) +
+        (static_cast<std::uint32_t>(screen) << 24U) +
+        (wifi_connected ? 0x20000000U : 0U) +
+        (cloud_connected ? 0x40000000U : 0U);
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+    revision += static_cast<std::uint32_t>(qr_onboarding.state()) << 16U;
+    if (screen == AppScreen::kPairDevice)
+      revision += static_cast<std::uint32_t>(
+                      pair_submode.load(std::memory_order_relaxed))
+                  << 12U;
+#endif
+    if (revision == last_revision) return;
+    last_revision = revision;
+
+    esp_err_t result = ESP_OK;
+    if (screen == AppScreen::kMainMenu) {
+      std::array<const char*, kMainMenuItems.size()> labels{};
+      for (std::size_t i = 0; i < kMainMenuItems.size(); ++i)
+        labels[i] = kMainMenuItems[i].label;
+      result = render_framebuffer_animated(algaguard::compose_menu_screen(
+          labels.data(), labels.size(), main_menu_nav.index()));
+    }
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+    else if (screen == AppScreen::kPairDevice) {
       if (qr_onboarding.state() == algaguard::QrOnboardingState::kExpired) {
         algaguard::DiagnosticScreen expired{};
         expired.lines = {{"QR EXPIRED", "PRESS SELECT", "FOR NEW QR", "NO SECRETS"}};
@@ -612,43 +696,38 @@ void render_startup_state() {
         algaguard::DiagnosticScreen error{};
         error.lines = {{"QR ERROR", "PRESS SELECT", "FOR NEW QR", "NO SECRETS"}};
         result = render_screen_animated(error);
-      } else if (display_mode == QrDisplayMode::kCode) {
+      } else if (pair_submode.load(std::memory_order_relaxed) ==
+                PairDeviceSubMode::kCode) {
         result = render_qr_code(qr_onboarding.uri());
       } else {
         result = render_qr_prompt();
       }
-      if (result != ESP_OK) ESP_LOGE(kTag, "display_update_failed mode=QR_ONBOARDING");
-      return;
     }
-    #endif
-    const bool wifi_connected =
-        wifi_connection_runtime.state() == algaguard::WifiConnectionState::kConnected;
-    #if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
-    const bool cloud_connected = device_telemetry_runtime.connected();
-    #else
-    constexpr bool cloud_connected = false;
-    #endif
-    auto visible_revision = revision + (wifi_connected ? 0x20000000U : 0U);
-    #if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
-    visible_revision += cloud_connected ? 0x40000000U : 0U;
-    #endif
-    if (visible_revision == last_demo_revision) return;
-    last_demo_revision = visible_revision;
-    const bool advertising = ble_provisioning_transport.advertisingRuntimeStatus().advertisingActive;
-    algaguard::LocalDemoNetworkState network_state{};
-    portENTER_CRITICAL(&local_demo_lock);
-    network_state = local_demo_menu.networkState();
-    portEXIT_CRITICAL(&local_demo_lock);
-#if defined(ALGAGUARD_DEVELOPMENT_WIFI_NVS_PLAINTEXT)
-    constexpr bool development_wifi_stored = true;
-#else
-    constexpr bool development_wifi_stored = false;
 #endif
-    const auto visible_screen = algaguard::local_demo_screen(
-        page, reading, advertising, wifi_connected, cloud_connected,
-        development_wifi_stored, network_state);
-    if (render_screen_animated(visible_screen) != ESP_OK)
-      ESP_LOGE(kTag, "display_update_failed mode=LOCAL_DEMO");
+    else {
+      // kTemperaturePh, kLight, kNutrients, kDeviceStatus, kNetwork, kAbout --
+      // local_demo_screen() already branches on page/networkState internally,
+      // including the Network sub-flow's confirm/forgotten/failed states.
+      algaguard::LocalDemoReading reading{};
+      algaguard::LocalDemoNetworkState network_state{};
+      portENTER_CRITICAL(&local_demo_lock);
+      reading = local_demo_reading;
+      network_state = local_network_flow.networkState();
+      portEXIT_CRITICAL(&local_demo_lock);
+#if defined(ALGAGUARD_DEVELOPMENT_WIFI_NVS_PLAINTEXT)
+      constexpr bool development_wifi_stored = true;
+#else
+      constexpr bool development_wifi_stored = false;
+#endif
+      const bool advertising =
+          ble_provisioning_transport.advertisingRuntimeStatus().advertisingActive;
+      const auto visible_screen = algaguard::local_demo_screen(
+          to_local_demo_page(screen), reading, advertising, wifi_connected,
+          cloud_connected, development_wifi_stored, network_state);
+      result = render_screen_animated(visible_screen);
+    }
+    if (result != ESP_OK) ESP_LOGE(kTag, "display_update_failed screen=%u",
+                                   static_cast<unsigned>(screen));
     return;
   }
 #endif
@@ -835,8 +914,15 @@ void sampling_task(void*) {
     const auto reading = local_demo_generator.next(sequence++);
     portENTER_CRITICAL(&local_demo_lock);
     local_demo_reading = reading;
-    ++local_demo_revision;
     portEXIT_CRITICAL(&local_demo_lock);
+    // Only worth a redraw if the visible screen actually shows a reading --
+    // no point re-flushing an unchanged menu/QR/About screen every tick.
+    const auto visible_screen = current_screen.load(std::memory_order_relaxed);
+    if (visible_screen == AppScreen::kTemperaturePh ||
+        visible_screen == AppScreen::kLight ||
+        visible_screen == AppScreen::kNutrients ||
+        visible_screen == AppScreen::kDeviceStatus)
+      screen_revision.fetch_add(1, std::memory_order_release);
 #if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
     device_telemetry_runtime.poll(
         reading, static_cast<std::uint64_t>(xTaskGetTickCount()) *
@@ -878,167 +964,173 @@ void input_task(void*) {
     }
     const auto now =
         static_cast<std::uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    if (up_button.update(
-            gpio_get_level(
-                static_cast<gpio_num_t>(algaguard::hardware::kButtonUp)) == 0,
-            now) == algaguard::ButtonEvent::kShortPress)
+    const bool up_pressed =
+        up_button.update(gpio_get_level(static_cast<gpio_num_t>(
+                             algaguard::hardware::kButtonUp)) == 0,
+                        now) == algaguard::ButtonEvent::kShortPress;
+    const bool down_pressed =
+        down_button.update(gpio_get_level(static_cast<gpio_num_t>(
+                               algaguard::hardware::kButtonDown)) == 0,
+                          now) == algaguard::ButtonEvent::kShortPress;
+    const bool select_pressed =
+        select_button.update(gpio_get_level(static_cast<gpio_num_t>(
+                                 algaguard::hardware::kButtonSelect)) == 0,
+                            now) == algaguard::ButtonEvent::kShortPress;
+    const bool back_pressed =
+        back_button.update(gpio_get_level(static_cast<gpio_num_t>(
+                               algaguard::hardware::kButtonBack)) == 0,
+                          now) == algaguard::ButtonEvent::kShortPress;
 #if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
-      {
-        ESP_LOGI(kTag, "BUTTON_EVENT action=UP");
-        portENTER_CRITICAL(&local_demo_lock);
-        local_demo_menu.previous();
-        ++local_demo_revision;
-        portEXIT_CRITICAL(&local_demo_lock);
-      }
-#else
-      menu.up();
-#endif
-    if (down_button.update(
-            gpio_get_level(
-                static_cast<gpio_num_t>(algaguard::hardware::kButtonDown)) == 0,
-            now) == algaguard::ButtonEvent::kShortPress)
-#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
-      {
-        ESP_LOGI(kTag, "BUTTON_EVENT action=DOWN");
-        portENTER_CRITICAL(&local_demo_lock);
-        local_demo_menu.next();
-        ++local_demo_revision;
-        portEXIT_CRITICAL(&local_demo_lock);
-      }
-#else
-      menu.down();
-#endif
-    if (select_button.update(
-            gpio_get_level(static_cast<gpio_num_t>(
-                algaguard::hardware::kButtonSelect)) == 0,
-            now) == algaguard::ButtonEvent::kShortPress) {
+    if (up_pressed || down_pressed || select_pressed || back_pressed) {
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING) && \
     defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
       if (device_telemetry_runtime.physicalUnpairPending()) {
-        const bool identity_cleared =
-            qr_credential_storage.confirmed_reset(true);
-        qr_onboarding.clear();
-        // Send the completion acknowledgment over MQTT *before* tearing
-        // down WiFi. Clearing the NVS-persisted identity above doesn't
-        // touch the already-established MQTT/TLS session (that session
-        // runs on key material already copied into RAM at connect time),
-        // but resetting WiFi does kill the underlying transport outright --
-        // publishing after that point had nothing left to send over, so
-        // the SUCCEEDED result could never reach the broker and the
-        // command just sat until it expired, leaving the device correctly
-        // unpaired locally while the cloud never found out.
-        const bool result_queued =
-            device_telemetry_runtime.confirmPhysicalUnpair(identity_cleared);
-        if (result_queued) vTaskDelay(pdMS_TO_TICKS(800));
+        if (select_pressed) {
+          const bool identity_cleared =
+              qr_credential_storage.confirmed_reset(true);
+          qr_onboarding.clear();
+          // Send the completion acknowledgment over MQTT *before* tearing
+          // down WiFi. Clearing the NVS-persisted identity above doesn't
+          // touch the already-established MQTT/TLS session (that session
+          // runs on key material already copied into RAM at connect time),
+          // but resetting WiFi does kill the underlying transport outright
+          // -- publishing after that point had nothing left to send over,
+          // so the SUCCEEDED result could never reach the broker and the
+          // command just sat until it expired, leaving the device
+          // correctly unpaired locally while the cloud never found out.
+          const bool result_queued =
+              device_telemetry_runtime.confirmPhysicalUnpair(identity_cleared);
+          if (result_queued) vTaskDelay(pdMS_TO_TICKS(800));
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
-        physical_runtime_bridge.clear(wifi_connection_runtime,
-                                      physical_session_installer);
+          physical_runtime_bridge.clear(wifi_connection_runtime,
+                                        physical_session_installer);
 #else
-        (void)wifi_connection_runtime.reset();
+          (void)wifi_connection_runtime.reset();
 #endif
-        const bool wifi_cleared = wifi_connection_adapter.forgetSavedNetwork();
-        qr_display_mode.store(QrDisplayMode::kPrompt,
-                              std::memory_order_relaxed);
-        qr_display_revision.fetch_add(1, std::memory_order_release);
-        ESP_LOGI(kTag,
-                 "PHYSICAL_UNPAIR_CONFIRMED identityCleared=%s "
-                 "wifiCleared=%s secretsShown=false",
-                 identity_cleared ? "true" : "false",
-                 wifi_cleared ? "true" : "false");
-      } else
-#endif
-      {
-#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
-#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
-      ESP_LOGI(kTag, "BUTTON_EVENT action=SELECT");
-      const auto display_mode = qr_display_mode.load(std::memory_order_relaxed);
-      if (display_mode == QrDisplayMode::kPrompt) {
-        qr_display_mode.store(QrDisplayMode::kCode, std::memory_order_relaxed);
-        qr_display_revision.fetch_add(1, std::memory_order_release);
-      } else if (display_mode == QrDisplayMode::kCode) {
-        const auto issued = std::max<std::uint32_t>(
-            1U, static_cast<std::uint32_t>(xTaskGetTickCount() / configTICK_RATE_HZ));
-        (void)qr_onboarding.generate(
-            algaguard::active_firmware_config().device_id, issued);
-        qr_display_revision.fetch_add(1, std::memory_order_release);
-      } else if (display_mode == QrDisplayMode::kLocalDemo) {
-        if (local_demo_menu.page() == algaguard::LocalDemoPage::kHome) {
-          qr_display_mode.store(QrDisplayMode::kPrompt,
-                                std::memory_order_relaxed);
-          qr_display_revision.fetch_add(1, std::memory_order_release);
-        } else {
-          algaguard::LocalDemoAction action{};
-          portENTER_CRITICAL(&local_demo_lock);
-          action = local_demo_menu.select();
-          ++local_demo_revision;
-          portEXIT_CRITICAL(&local_demo_lock);
-          if (action == algaguard::LocalDemoAction::kForgetSavedWifi) {
-            const bool forgotten = wifi_connection_adapter.forgetSavedNetwork();
-            (void)wifi_connection_runtime.reset();
-            portENTER_CRITICAL(&local_demo_lock);
-            local_demo_menu.setForgetResult(forgotten);
-            ++local_demo_revision;
-            portEXIT_CRITICAL(&local_demo_lock);
-            ESP_LOGI(kTag, "WIFI_FORGET_RESULT success=%s credentialsShown=false",
-                     forgotten ? "true" : "false");
-          }
+          const bool wifi_cleared = wifi_connection_adapter.forgetSavedNetwork();
+          current_screen.store(AppScreen::kMainMenu, std::memory_order_relaxed);
+          screen_revision.fetch_add(1, std::memory_order_release);
+          ESP_LOGI(kTag,
+                   "PHYSICAL_UNPAIR_CONFIRMED identityCleared=%s "
+                   "wifiCleared=%s secretsShown=false",
+                   identity_cleared ? "true" : "false",
+                   wifi_cleared ? "true" : "false");
+        } else if (back_pressed) {
+          (void)device_telemetry_runtime.cancelPhysicalUnpair();
+          screen_revision.fetch_add(1, std::memory_order_release);
+          ESP_LOGI(kTag, "PHYSICAL_UNPAIR_CANCELLED secretsShown=false");
         }
-      }
-#else
-      algaguard::LocalDemoAction action{};
-      portENTER_CRITICAL(&local_demo_lock);
-      action = local_demo_menu.select();
-      ++local_demo_revision;
-      portEXIT_CRITICAL(&local_demo_lock);
-      if (action == algaguard::LocalDemoAction::kForgetSavedWifi) {
-        const bool forgotten = wifi_connection_adapter.forgetSavedNetwork();
-        (void)wifi_connection_runtime.reset();
-        portENTER_CRITICAL(&local_demo_lock);
-        local_demo_menu.setForgetResult(forgotten);
-        ++local_demo_revision;
-        portEXIT_CRITICAL(&local_demo_lock);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        continue;
       }
 #endif
-#else
-      menu.select();
-      if (menu.reset_confirmed()) startup.confirmed_reset(true);
+      const auto screen = current_screen.load(std::memory_order_relaxed);
+      switch (screen) {
+        case AppScreen::kMainMenu:
+          if (up_pressed) {
+            main_menu_nav.previous();
+            screen_revision.fetch_add(1, std::memory_order_release);
+            ESP_LOGI(kTag, "BUTTON_EVENT action=UP");
+          }
+          if (down_pressed) {
+            main_menu_nav.next();
+            screen_revision.fetch_add(1, std::memory_order_release);
+            ESP_LOGI(kTag, "BUTTON_EVENT action=DOWN");
+          }
+          if (select_pressed) {
+            const auto target = kMainMenuItems[main_menu_nav.index()].screen;
+            current_screen.store(target, std::memory_order_relaxed);
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+            if (target == AppScreen::kPairDevice)
+              pair_submode.store(PairDeviceSubMode::kPrompt,
+                                 std::memory_order_relaxed);
 #endif
+            if (target == AppScreen::kNetwork) {
+              portENTER_CRITICAL(&local_demo_lock);
+              local_network_flow.reset();
+              portEXIT_CRITICAL(&local_demo_lock);
+            }
+            screen_revision.fetch_add(1, std::memory_order_release);
+            ESP_LOGI(kTag, "BUTTON_EVENT action=SELECT");
+          }
+          break;
+#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+        case AppScreen::kPairDevice:
+          if (select_pressed) {
+            if (pair_submode.load(std::memory_order_relaxed) ==
+                PairDeviceSubMode::kPrompt) {
+              pair_submode.store(PairDeviceSubMode::kCode,
+                                 std::memory_order_relaxed);
+            } else {
+              const auto issued = std::max<std::uint32_t>(
+                  1U, static_cast<std::uint32_t>(
+                          xTaskGetTickCount() / configTICK_RATE_HZ));
+              (void)qr_onboarding.generate(
+                  algaguard::active_firmware_config().device_id, issued);
+            }
+            screen_revision.fetch_add(1, std::memory_order_release);
+            ESP_LOGI(kTag, "BUTTON_EVENT action=SELECT");
+          }
+          if (back_pressed) {
+            current_screen.store(AppScreen::kMainMenu, std::memory_order_relaxed);
+            screen_revision.fetch_add(1, std::memory_order_release);
+            ESP_LOGI(kTag, "BUTTON_EVENT action=BACK");
+          }
+          break;
+#endif
+        case AppScreen::kNetwork:
+          if (select_pressed) {
+            algaguard::LocalDemoAction action{};
+            portENTER_CRITICAL(&local_demo_lock);
+            action = local_network_flow.select();
+            portEXIT_CRITICAL(&local_demo_lock);
+            screen_revision.fetch_add(1, std::memory_order_release);
+            ESP_LOGI(kTag, "BUTTON_EVENT action=SELECT");
+            if (action == algaguard::LocalDemoAction::kForgetSavedWifi) {
+              const bool forgotten = wifi_connection_adapter.forgetSavedNetwork();
+              (void)wifi_connection_runtime.reset();
+              portENTER_CRITICAL(&local_demo_lock);
+              local_network_flow.setForgetResult(forgotten);
+              portEXIT_CRITICAL(&local_demo_lock);
+              screen_revision.fetch_add(1, std::memory_order_release);
+              ESP_LOGI(kTag,
+                       "WIFI_FORGET_RESULT success=%s credentialsShown=false",
+                       forgotten ? "true" : "false");
+            }
+          }
+          if (back_pressed) {
+            portENTER_CRITICAL(&local_demo_lock);
+            const bool confirming = local_network_flow.networkState() ==
+                                    algaguard::LocalDemoNetworkState::kConfirmForget;
+            if (confirming) local_network_flow.reset();
+            portEXIT_CRITICAL(&local_demo_lock);
+            // "BACK CANCEL" during the forget-WiFi confirmation stays on
+            // this screen and just un-confirms; from anywhere else on the
+            // Network screen, Back leaves to the main menu like every
+            // other screen.
+            if (!confirming)
+              current_screen.store(AppScreen::kMainMenu, std::memory_order_relaxed);
+            screen_revision.fetch_add(1, std::memory_order_release);
+            ESP_LOGI(kTag, "BUTTON_EVENT action=BACK");
+          }
+          break;
+        default:  // kTemperaturePh, kLight, kNutrients, kDeviceStatus, kAbout
+          if (back_pressed) {
+            current_screen.store(AppScreen::kMainMenu, std::memory_order_relaxed);
+            screen_revision.fetch_add(1, std::memory_order_release);
+            ESP_LOGI(kTag, "BUTTON_EVENT action=BACK");
+          }
+          break;
       }
     }
-    if (back_button.update(
-            gpio_get_level(
-                static_cast<gpio_num_t>(algaguard::hardware::kButtonBack)) == 0,
-            now) == algaguard::ButtonEvent::kShortPress)
-#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
-      {
-#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
-        ESP_LOGI(kTag, "BUTTON_EVENT action=BACK");
-#if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
-        if (device_telemetry_runtime.physicalUnpairPending()) {
-          (void)device_telemetry_runtime.cancelPhysicalUnpair();
-          qr_display_revision.fetch_add(1, std::memory_order_release);
-          ESP_LOGI(kTag, "PHYSICAL_UNPAIR_CANCELLED secretsShown=false");
-          vTaskDelay(pdMS_TO_TICKS(20));
-          continue;
-        }
-#endif
-        if (qr_display_mode.load(std::memory_order_relaxed) !=
-            QrDisplayMode::kLocalDemo) {
-          qr_display_mode.store(QrDisplayMode::kLocalDemo,
-                                std::memory_order_relaxed);
-          qr_display_revision.fetch_add(1, std::memory_order_release);
-        } else {
-#endif
-        portENTER_CRITICAL(&local_demo_lock);
-        local_demo_menu.home();
-        ++local_demo_revision;
-        portEXIT_CRITICAL(&local_demo_lock);
-#if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
-        }
-#endif
-      }
 #else
-      menu.back();
+    if (up_pressed) menu.up();
+    if (down_pressed) menu.down();
+    if (select_pressed) {
+      menu.select();
+      if (menu.reset_confirmed()) startup.confirmed_reset(true);
+    }
+    if (back_pressed) menu.back();
 #endif
     vTaskDelay(pdMS_TO_TICKS(20));
   }
