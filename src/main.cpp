@@ -16,6 +16,14 @@
 #include "algaguard/secure_identity.hpp"
 #include "algaguard/startup.hpp"
 #include "algaguard/wifi_connection_runtime.hpp"
+#if defined(ALGAGUARD_ENABLE_REAL_SENSORS)
+#include "algaguard/analog_sensors.hpp"
+#include "algaguard/bh1750.hpp"
+#include "algaguard/ds18b20.hpp"
+#include "algaguard/ds3231.hpp"
+#include "algaguard/nutrient_index.hpp"
+#include "algaguard/sd_queue.hpp"
+#endif
 
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
@@ -39,6 +47,9 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
+#include <ctime>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -69,17 +80,31 @@ algaguard::DebouncedButton up_button;
 algaguard::DebouncedButton down_button;
 algaguard::DebouncedButton select_button;
 algaguard::DebouncedButton back_button;
+#if defined(ALGAGUARD_LOCAL_DEMO_MODE)
+// The OLED menu structure below is shared by every demo build target
+// regardless of where its sensor readings actually come from -- only the
+// data-source objects immediately following this comment are conditional
+// on ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS vs. ALGAGUARD_ENABLE_REAL_SENSORS.
 #if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
 algaguard::LocalDemoGenerator local_demo_generator;
+#elif defined(ALGAGUARD_ENABLE_REAL_SENSORS)
+algaguard::Ds18b20Sensor real_ds18b20_sensor{
+    static_cast<gpio_num_t>(algaguard::hardware::kDs18b20Data)};
+algaguard::Bh1750Sensor real_bh1750_sensor;
+algaguard::Ds3231Rtc real_ds3231_rtc;
+algaguard::AnalogSensors real_analog_sensors;
+algaguard::SdQueue real_sd_queue;
+bool real_ds18b20_conversion_pending{};
+#endif
 algaguard::LocalDemoNetworkFlow local_network_flow;
 algaguard::LocalDemoReading local_demo_reading{};
 portMUX_TYPE local_demo_lock = portMUX_INITIALIZER_UNLOCKED;
 
 // Unified OLED screen state, replacing the old QrDisplayMode/LocalDemoPage
-// dual-track navigation. Scoped to ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS since
-// both demo build targets (with and without QR onboarding) share this menu;
-// kPairDevice only appears in kMainMenuItems -- and is only ever entered --
-// when ALGAGUARD_ENABLE_QR_ONBOARDING is also defined.
+// dual-track navigation. Scoped to ALGAGUARD_LOCAL_DEMO_MODE since every
+// demo build target (mock or real sensors, with or without QR onboarding)
+// shares this menu; kPairDevice only appears in kMainMenuItems -- and is
+// only ever entered -- when ALGAGUARD_ENABLE_QR_ONBOARDING is also defined.
 enum class AppScreen : std::uint8_t {
   kMainMenu,
   kPairDevice,
@@ -504,7 +529,7 @@ class EspFoundationServices final : public algaguard::StartupServices {
     ble_provisioning_transport.recordAdvertisingStage(
         algaguard::BleAdvertisingStage::kNvsReady, result);
 #endif
-#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS) && !defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
+#if defined(ALGAGUARD_LOCAL_DEMO_MODE) && !defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
     initialize_physical_session_console();
     ESP_LOGI(kTag,
              "LOCAL_DEMO_RUNTIME_READY wifi=NOT_CONFIGURED cloud=OFFLINE persistence=%s",
@@ -532,6 +557,15 @@ class EspFoundationServices final : public algaguard::StartupServices {
     if (!board_.oled_initialized)
       return {algaguard::OperationStatus::kRecoverableFailure,
               algaguard::StartupReason::kModuleUnavailable};
+#if defined(ALGAGUARD_ENABLE_REAL_SENSORS)
+    // BH1750/DS3231 share the OLED's already-open I2C bus. A missing or
+    // unwired sensor here must not block boot -- it degrades that one
+    // reading (see sampling_task's DEGRADED handling), not the device.
+    if (real_bh1750_sensor.configure(oled_bus) != ESP_OK)
+      ESP_LOGW(kTag, "BH1750_INIT_FAILED reason=absent_or_unwired");
+    if (real_ds3231_rtc.configure(oled_bus) != ESP_OK)
+      ESP_LOGW(kTag, "DS3231_INIT_FAILED reason=absent_or_unwired");
+#endif
     if (render_brand_splash() != ESP_OK)
       return {algaguard::OperationStatus::kRecoverableFailure,
               algaguard::StartupReason::kModuleUnavailable};
@@ -559,6 +593,24 @@ class EspFoundationServices final : public algaguard::StartupServices {
 
   algaguard::StartupResult input_init() override {
     configure_gpio();
+#if defined(ALGAGUARD_ENABLE_REAL_SENSORS)
+    // Every sensor/SD failure here is logged and treated as non-fatal --
+    // a missing or unwired peripheral must not block BLE/Wi-Fi/OLED
+    // bring-up. sampling_task falls back to the last-known-good value and
+    // marks affected readings DEGRADED instead.
+    if (real_ds18b20_sensor.configure() != ESP_OK)
+      ESP_LOGW(kTag, "DS18B20_INIT_FAILED reason=absent_or_unwired");
+    if (real_analog_sensors.configure(
+            static_cast<gpio_num_t>(algaguard::hardware::kTdsAdcPin),
+            static_cast<gpio_num_t>(algaguard::hardware::kPhAdcPin)) != ESP_OK)
+      ESP_LOGW(kTag, "ANALOG_SENSORS_INIT_FAILED reason=absent_or_unwired");
+    if (real_sd_queue.configure(
+            static_cast<gpio_num_t>(algaguard::hardware::kSdMosi),
+            static_cast<gpio_num_t>(algaguard::hardware::kSdMiso),
+            static_cast<gpio_num_t>(algaguard::hardware::kSdSck),
+            static_cast<gpio_num_t>(algaguard::hardware::kSdCs)) != ESP_OK)
+      ESP_LOGW(kTag, "SD_QUEUE_INIT_FAILED reason=absent_or_unwired");
+#endif
     return {algaguard::OperationStatus::kSuccess};
   }
 
@@ -645,7 +697,7 @@ void render_startup_state() {
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
   static auto last_physical_state = static_cast<algaguard::PhysicalTestState>(255);
 #endif
-#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
+#if defined(ALGAGUARD_LOCAL_DEMO_MODE)
   static std::uint32_t last_revision = UINT32_MAX;
   if (startup.state() >= algaguard::StartupState::kInputInit) {
     const auto screen = current_screen.load(std::memory_order_relaxed);
@@ -903,15 +955,74 @@ void startup_task(void*) {
   }
 }
 
+#if defined(ALGAGUARD_ENABLE_REAL_SENSORS)
+std::optional<std::string> format_utc_seconds(std::time_t value) {
+  std::tm utc{};
+  gmtime_r(&value, &utc);
+  char output[21]{};
+  if (std::strftime(output, sizeof(output), "%Y-%m-%dT%H:%M:%SZ", &utc) != 20)
+    return std::nullopt;
+  return std::string{output};
+}
+
+// SNTP is the primary clock source (synced on every boot); the DS3231 is
+// only consulted as a fallback for timestamping SD-buffered samples on a
+// boot where SNTP hasn't succeeded yet -- see ds3231.hpp's class comment.
+std::optional<std::time_t> current_trusted_utc() {
+  std::time_t now{};
+  std::time(&now);
+  if (now >= 1704067200) return now;
+  if (!real_ds3231_rtc.oscillatorStopped()) return real_ds3231_rtc.readUtc();
+  return std::nullopt;
+}
+#endif
+
 void sampling_task(void*) {
   std::uint64_t sequence = 1;
+#if defined(ALGAGUARD_ENABLE_REAL_SENSORS)
+  bool replay_ack_pending = false;
+#endif
   while (true) {
-#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
+#if defined(ALGAGUARD_LOCAL_DEMO_MODE)
     if (startup.state() < algaguard::StartupState::kInputInit) {
       vTaskDelay(pdMS_TO_TICKS(100));
       continue;
     }
+#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
     const auto reading = local_demo_generator.next(sequence++);
+    constexpr std::string_view quality_flag = "SIMULATED";
+#elif defined(ALGAGUARD_ENABLE_REAL_SENSORS)
+    // Non-blocking pipeline: read back the conversion started on the
+    // *previous* tick (>=1000ms ago, comfortably past DS18B20's ~750ms
+    // requirement at 12-bit resolution), then immediately kick off the
+    // next conversion so its latency overlaps with the rest of this tick's
+    // work instead of blocking it.
+    if (!real_ds18b20_conversion_pending) {
+      real_ds18b20_conversion_pending = real_ds18b20_sensor.startConversion();
+      vTaskDelay(pdMS_TO_TICKS(760));  // absorbed once, first iteration only
+    }
+    static double last_good_temperature_c = 24.0;
+    static double last_good_ph = 7.0;
+    static double last_good_light_lux = 0.0;
+    bool degraded = false;
+    const auto temperature_reading = real_ds18b20_sensor.readCelsius();
+    real_ds18b20_conversion_pending = real_ds18b20_sensor.startConversion();
+    if (temperature_reading) last_good_temperature_c = *temperature_reading;
+    else degraded = true;
+    const auto light_reading = real_bh1750_sensor.readLux();
+    if (light_reading) last_good_light_lux = *light_reading;
+    else degraded = true;
+    const auto ph_reading = real_analog_sensors.readPh();
+    if (ph_reading) last_good_ph = *ph_reading;
+    else degraded = true;
+    const auto tds_reading = real_analog_sensors.readTdsPpm(last_good_temperature_c);
+    if (!tds_reading) degraded = true;
+    const algaguard::LocalDemoReading reading{
+        sequence++, last_good_temperature_c, last_good_ph, last_good_light_lux,
+        algaguard::nutrient_percent(tds_reading.value_or(0.0), last_good_ph,
+                                    last_good_temperature_c)};
+    const std::string_view quality_flag = degraded ? "DEGRADED" : "REAL";
+#endif
     portENTER_CRITICAL(&local_demo_lock);
     local_demo_reading = reading;
     portEXIT_CRITICAL(&local_demo_lock);
@@ -924,9 +1035,49 @@ void sampling_task(void*) {
         visible_screen == AppScreen::kDeviceStatus)
       screen_revision.fetch_add(1, std::memory_order_release);
 #if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)
+#if defined(ALGAGUARD_ENABLE_REAL_SENSORS)
+    const std::uint64_t uptime_ms = static_cast<std::uint64_t>(
+        xTaskGetTickCount()) * portTICK_PERIOD_MS;
+    const bool online =
+        wifi_connection_runtime.state() == algaguard::WifiConnectionState::kConnected &&
+        device_telemetry_runtime.connected();
+    if (online) {
+      // The previous tick's replayed sample can only have been resolved
+      // (acked, or exhausted after 3 retries) by now, since poll() blocks a
+      // new publish while one is still pending -- reaching here means it's
+      // safe to advance the durable SD read cursor past it.
+      if (replay_ack_pending) {
+        real_sd_queue.acknowledgeOldestUnread();
+        replay_ack_pending = false;
+      }
+      if (const auto buffered = real_sd_queue.peekOldestUnread()) {
+        if (const auto observedAt = format_utc_seconds(buffered->observedAtUnix)) {
+          const algaguard::LocalDemoReading replay{
+              buffered->sequence, buffered->temperatureC, buffered->ph,
+              buffered->lightLux, buffered->nutrientPercent};
+          device_telemetry_runtime.poll(replay, uptime_ms,
+                                        algaguard::SampleOrigin::kReplayed,
+                                        "REAL", *observedAt);
+          replay_ack_pending = true;
+        }
+      }
+      device_telemetry_runtime.poll(reading, uptime_ms,
+                                    algaguard::SampleOrigin::kLive, quality_flag);
+    } else if (const auto observedAt = current_trusted_utc()) {
+      algaguard::SdQueueRecord record{};
+      record.sequence = reading.sequence;
+      record.observedAtUnix = *observedAt;
+      record.temperatureC = reading.temperatureC;
+      record.ph = reading.ph;
+      record.lightLux = reading.lightLux;
+      record.nutrientPercent = reading.nutrientPercent;
+      real_sd_queue.append(record);
+    }
+#else
     device_telemetry_runtime.poll(
         reading, static_cast<std::uint64_t>(xTaskGetTickCount()) *
                      portTICK_PERIOD_MS);
+#endif
 #endif
     vTaskDelay(pdMS_TO_TICKS(1000));
     continue;
@@ -980,7 +1131,7 @@ void input_task(void*) {
         back_button.update(gpio_get_level(static_cast<gpio_num_t>(
                                algaguard::hardware::kButtonBack)) == 0,
                           now) == algaguard::ButtonEvent::kShortPress;
-#if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
+#if defined(ALGAGUARD_LOCAL_DEMO_MODE)
     if (up_pressed || down_pressed || select_pressed || back_pressed) {
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING) && \
     defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)

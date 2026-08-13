@@ -23,9 +23,7 @@ void test_local_demo_generator_is_deterministic_and_bounded() {
                              static_cast<float>(b.temperatureC));
     TEST_ASSERT_TRUE(a.ph >= 0 && a.ph <= 14);
     TEST_ASSERT_TRUE(a.lightLux >= 0);
-    TEST_ASSERT_TRUE(a.nitrateMgL >= 0);
-    TEST_ASSERT_TRUE(a.phosphateMgL >= 0);
-    TEST_ASSERT_TRUE(a.potassiumMgL >= 0);
+    TEST_ASSERT_TRUE(a.nutrientPercent >= 0 && a.nutrientPercent <= 100);
   }
 }
 

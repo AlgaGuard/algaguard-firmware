@@ -369,7 +369,10 @@ bool EspDeviceTelemetryRuntime::start(std::string deviceId,
 }
 
 void EspDeviceTelemetryRuntime::poll(const LocalDemoReading& reading,
-                                     std::uint64_t uptimeMs) {
+                                     std::uint64_t uptimeMs,
+                                     SampleOrigin origin,
+                                     std::string_view qualityFlag,
+                                     std::optional<std::string> originalObservedAtUtc) {
   impl_->expireUnpair();
   // Profile assignment routes threshold notifications; it must never gate
   // whether real sensor readings reach the platform, so profileInstalled is
@@ -395,16 +398,28 @@ void EspDeviceTelemetryRuntime::poll(const LocalDemoReading& reading,
     impl_->unlock();
     return;
   }
+  if (origin == SampleOrigin::kReplayed && !originalObservedAtUtc) {
+    impl_->unlock();
+    return;
+  }
+  const std::string_view observedAt =
+      origin == SampleOrigin::kReplayed ? *originalObservedAtUtc : *now;
+#if defined(ALGAGUARD_ENABLE_REAL_SENSORS)
+  constexpr std::string_view scenario = kScenarioRealSensors;
+#else
+  constexpr std::string_view scenario = kScenarioLocalDemo;
+#endif
   const std::string messageId = randomUuid();
   const std::string batchId = randomUuid();
-  const auto payload = build_device_simulated_telemetry(
-      impl_->deviceId, impl_->window.profile(), reading, *now, messageId,
-      batchId, uptimeMs);
+  const auto payload = build_device_telemetry_payload(
+      impl_->deviceId, impl_->window.profile(), reading, *now, observedAt,
+      messageId, batchId, uptimeMs, origin == SampleOrigin::kReplayed,
+      origin == SampleOrigin::kReplayed, qualityFlag, scenario);
   if (payload && impl_->window.begin(batchId, *payload, uptimeMs)) {
     impl_->lastPublishMs = uptimeMs;
     (void)impl_->publish(impl_->telemetryTopic, *payload);
-    ESP_LOGI(kTag,
-             "DEVICE_TELEMETRY_PUBLISHED qos=1 samples=1 source=DEVICE_LOCAL_SIMULATION");
+    ESP_LOGI(kTag, "DEVICE_TELEMETRY_PUBLISHED qos=1 samples=1 replay=%s",
+             origin == SampleOrigin::kReplayed ? "true" : "false");
   }
   impl_->unlock();
 }

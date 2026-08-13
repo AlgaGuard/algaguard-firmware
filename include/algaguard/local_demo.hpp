@@ -7,6 +7,7 @@
 #include <string>
 
 #include "algaguard/display.hpp"
+#include "algaguard/nutrient_index.hpp"
 
 namespace algaguard {
 
@@ -25,9 +26,7 @@ struct LocalDemoReading {
   double temperatureC{};
   double ph{};
   double lightLux{};
-  double nitrateMgL{};
-  double phosphateMgL{};
-  double potassiumMgL{};
+  double nutrientPercent{};
 };
 
 class LocalDemoGenerator {
@@ -38,13 +37,15 @@ class LocalDemoGenerator {
     const double step = static_cast<double>((sequence + seed_) % 10000U);
     const double slow = std::sin(step / 17.0);
     const double slower = std::sin(step / 43.0 + seed_);
-    return {sequence,
-            rounded(24.0 + slow * 0.8 + slower * 0.2, 2),
-            rounded(7.1 + slow * 0.12, 2),
+    const double temperatureC = rounded(24.0 + slow * 0.8 + slower * 0.2, 2);
+    const double ph = rounded(7.1 + slow * 0.12, 2);
+    // Fake TDS wave (not itself a wire field) feeding the same Nutrient
+    // Strength Index formula the real-sensor path uses, so mock and real
+    // readings are shaped identically for every downstream consumer.
+    const double fakeTdsPpm = 700.0 + slow * 120.0 + slower * 40.0;
+    return {sequence, temperatureC, ph,
             rounded(900.0 + slow * 110.0 + slower * 35.0, 0),
-            rounded(2.4 + slow * 0.35, 2),
-            rounded(0.35 + slower * 0.06, 2),
-            rounded(1.8 + slow * 0.2 + slower * 0.05, 2)};
+            rounded(nutrient_percent(fakeTdsPpm, ph, temperatureC), 1)};
   }
 
  private:
@@ -131,10 +132,9 @@ inline DiagnosticScreen local_demo_screen(LocalDemoPage page,
                 local_demo_value("LIGHT", reading.lightLux, 0, " LUX"),
                 "DEV GENERATED", cloudState}}};
     case LocalDemoPage::kNutrients:
-      return {{{local_demo_value("N", reading.nitrateMgL, 2, " MG L"),
-                local_demo_value("P", reading.phosphateMgL, 2, " MG L"),
-                local_demo_value("K", reading.potassiumMgL, 2, " MG L"),
-                "DEV GENERATED"}}};
+      return {{{"DEMO NUTRIENTS",
+                local_demo_value("NSI", reading.nutrientPercent, 1, " PCT"),
+                "DEV GENERATED", cloudState}}};
     case LocalDemoPage::kDeviceStatus:
       return {{{advertisingActive ? "BLE ADV ACTIVE" : "BLE ADV INIT",
                 wifiState, cloudState, "DEV GENERATED"}}};

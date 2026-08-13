@@ -14,8 +14,8 @@ namespace algaguard {
 
 inline constexpr std::string_view kDeviceTelemetrySchema =
     "urn:algaguard:schema:mqtt:telemetry-batch:v1";
-inline constexpr std::string_view kDeviceSimulationScenario =
-    "device-local-demo";
+inline constexpr std::string_view kScenarioLocalDemo = "device-local-demo";
+inline constexpr std::string_view kScenarioRealSensors = "device-real-sensors";
 
 struct ActiveProfileReference {
   std::string profileId;
@@ -69,17 +69,20 @@ inline bool valid_utc_timestamp(std::string_view value) {
          value[19] == 'Z';
 }
 
-inline std::optional<std::string> build_device_simulated_telemetry(
+inline std::optional<std::string> build_device_telemetry_payload(
     std::string_view deviceId, const std::optional<ActiveProfileReference>& profile,
     const LocalDemoReading& reading, std::string_view sentAt,
-    std::string_view messageId, std::string_view batchId,
-    std::uint64_t uptimeMs) {
+    std::string_view observedAt, std::string_view messageId,
+    std::string_view batchId, std::uint64_t uptimeMs, bool isReplay,
+    bool createdFromSd, std::string_view qualityFlag,
+    std::string_view scenario) {
   if (!valid_telemetry_device_id(deviceId) ||
       (profile && !valid_profile_reference(*profile)) ||
-      !valid_utc_timestamp(sentAt) || !valid_uuid(messageId) ||
-      !valid_uuid(batchId) || reading.sequence == 0 || reading.ph < 0 ||
-      reading.ph > 14 || reading.lightLux < 0 || reading.nitrateMgL < 0 ||
-      reading.phosphateMgL < 0 || reading.potassiumMgL < 0)
+      !valid_utc_timestamp(sentAt) || !valid_utc_timestamp(observedAt) ||
+      !valid_uuid(messageId) || !valid_uuid(batchId) || reading.sequence == 0 ||
+      reading.ph < 0 || reading.ph > 14 || reading.lightLux < 0 ||
+      reading.nutrientPercent < 0 || reading.nutrientPercent > 100 ||
+      qualityFlag.empty() || scenario.empty())
     return std::nullopt;
 
   // activeProfile is optional on the wire: a freshly-paired device with no
@@ -107,11 +110,10 @@ inline std::optional<std::string> build_device_simulated_telemetry(
       "\"sampleCount\":1,%s\"samples\":[{\"sequence\":\"%llu\","
       "\"observedAt\":\"%.*s\",\"timestampQuality\":\"NTP_SYNCED\","
       "\"uptimeMs\":\"%llu\",\"values\":{\"temperatureC\":%.2f,"
-      "\"ph\":%.2f,\"lightLux\":%.0f,\"nitrateMgL\":%.2f,"
-      "\"phosphateMgL\":%.2f,\"potassiumMgL\":%.2f},"
-      "\"qualityFlags\":[\"SIMULATED\"],"
-      "\"simulationScenario\":\"%.*s\"}],\"isReplay\":false,"
-      "\"createdFromSd\":false}}",
+      "\"ph\":%.2f,\"lightLux\":%.0f,\"nutrientPercent\":%.1f},"
+      "\"qualityFlags\":[\"%.*s\"],"
+      "\"simulationScenario\":\"%.*s\"}],\"isReplay\":%s,"
+      "\"createdFromSd\":%s}}",
       static_cast<int>(kDeviceTelemetrySchema.size()), kDeviceTelemetrySchema.data(),
       static_cast<int>(messageId.size()), messageId.data(),
       static_cast<int>(deviceId.size()), deviceId.data(),
@@ -120,12 +122,12 @@ inline std::optional<std::string> build_device_simulated_telemetry(
       static_cast<unsigned long long>(reading.sequence),
       static_cast<unsigned long long>(reading.sequence), activeProfileFragment,
       static_cast<unsigned long long>(reading.sequence),
-      static_cast<int>(sentAt.size()), sentAt.data(),
+      static_cast<int>(observedAt.size()), observedAt.data(),
       static_cast<unsigned long long>(uptimeMs), reading.temperatureC, reading.ph,
-      reading.lightLux, reading.nitrateMgL, reading.phosphateMgL,
-      reading.potassiumMgL,
-      static_cast<int>(kDeviceSimulationScenario.size()),
-      kDeviceSimulationScenario.data());
+      reading.lightLux, reading.nutrientPercent,
+      static_cast<int>(qualityFlag.size()), qualityFlag.data(),
+      static_cast<int>(scenario.size()), scenario.data(),
+      isReplay ? "true" : "false", createdFromSd ? "true" : "false");
   if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(output))
     return std::nullopt;
   return std::string{output, static_cast<std::size_t>(written)};

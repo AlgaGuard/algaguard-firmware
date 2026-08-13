@@ -7,9 +7,14 @@ combination in production, release, DS-identity, and non-demo builds.
 
 The generator updates once per second using deterministic, smooth, bounded
 drift. It provides presentation values for temperature, pH, light intensity,
-nitrate, phosphate, and potassium. The values are local simulation data only;
-they are not uploaded, do not represent scientific recommendations, and must
-not be described as readings from physical sensors.
+and a single derived Nutrient Strength Index (a composite of pH, light, and
+a fake TDS wave -- not a real sensor reading). The values are local
+simulation data only; they are not uploaded, do not represent scientific
+recommendations, and must not be described as readings from physical
+sensors. See `esp32-s3-dev-qr-onboarding-demo` below and
+`ALGAGUARD_ENABLE_REAL_SENSORS` for the real-sensor equivalent, which
+reports the same four values but computed from physical DS18B20/BH1750/TDS/
+pH readings.
 
 The 128x64 OLED uses I2C address `0x3C`, SDA GPIO8, and SCL GPIO9. A ~4s
 animated boot screen auto-transitions into a scrollable main menu with a
