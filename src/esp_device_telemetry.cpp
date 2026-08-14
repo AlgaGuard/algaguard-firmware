@@ -261,7 +261,7 @@ struct EspDeviceTelemetryRuntime::Impl {
     const bool acknowledged = window.acknowledge(*batchId, *status);
     unlock();
     if (acknowledged)
-      ESP_LOGI(kTag, "DEVICE_TELEMETRY_ACK status=%s source=DEVICE_LOCAL_SIMULATION",
+      ESP_LOGI(kTag, "DEVICE_TELEMETRY_ACK status=%s source=DEVICE_LOCAL",
                status->c_str());
   }
 
@@ -288,7 +288,7 @@ struct EspDeviceTelemetryRuntime::Impl {
         self->connected.store(true, std::memory_order_release);
         (void)esp_mqtt_client_subscribe(self->client, self->ackTopic.c_str(), 1);
         (void)esp_mqtt_client_subscribe(self->client, self->commandTopic.c_str(), 1);
-        ESP_LOGI(kTag, "DEVICE_MQTT_CONNECTED mtls=true source=DEVICE_LOCAL_SIMULATION");
+        ESP_LOGI(kTag, "DEVICE_MQTT_CONNECTED mtls=true source=DEVICE_LOCAL");
         break;
       case MQTT_EVENT_DISCONNECTED:
         self->connected.store(false, std::memory_order_release);

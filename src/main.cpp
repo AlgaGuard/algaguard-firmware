@@ -1445,7 +1445,7 @@ extern "C" void app_main() {
   const auto inputTaskCreated =
       xTaskCreate(input_task, "buttons", 4096, nullptr, 5, nullptr);
   const auto samplingTaskCreated =
-      xTaskCreate(sampling_task, "simulated_sampling", 4096, nullptr, 4,
+      xTaskCreate(sampling_task, "sampling_task", 12288, nullptr, 4,
                   nullptr);
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
   if (bootstrapTaskCreated != pdPASS)
