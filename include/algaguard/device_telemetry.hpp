@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "algaguard/local_demo.hpp"
+#include "algaguard/npk_estimator.hpp"
 
 namespace algaguard {
 
@@ -100,6 +101,26 @@ inline std::optional<std::string> build_device_telemetry_payload(
       return std::nullopt;
   }
 
+  // Nutrient estimates are derived from this sample's own pH and temperature
+  // at send time, so SD-replayed samples carry them too without changing the
+  // on-card record format. Each is omitted when its input is outside the
+  // range the model was trained on.
+  const NpkEstimate npk = estimate_npk(reading.ph, reading.temperatureC);
+  char npkFragment[96]{};
+  std::size_t npkLength = 0;
+  const auto appendEstimate = [&](const char* key,
+                                  const std::optional<double>& value) {
+    if (!value) return;
+    const int added = std::snprintf(npkFragment + npkLength,
+                                    sizeof(npkFragment) - npkLength,
+                                    ",\"%s\":%.2f", key, *value);
+    if (added > 0) npkLength += static_cast<std::size_t>(added);
+  };
+  appendEstimate("nitrateMgL", npk.nitrateMgL);
+  appendEstimate("phosphateMgL", npk.phosphateMgL);
+  appendEstimate("potassiumMgL", npk.potassiumMgL);
+  if (npkLength >= sizeof(npkFragment)) return std::nullopt;
+
   char output[2048]{};
   const int written = std::snprintf(
       output, sizeof(output),
@@ -110,7 +131,7 @@ inline std::optional<std::string> build_device_telemetry_payload(
       "\"sampleCount\":1,%s\"samples\":[{\"sequence\":\"%llu\","
       "\"observedAt\":\"%.*s\",\"timestampQuality\":\"NTP_SYNCED\","
       "\"uptimeMs\":\"%llu\",\"values\":{\"temperatureC\":%.2f,"
-      "\"ph\":%.2f,\"lightLux\":%.0f,\"nutrientPercent\":%.1f},"
+      "\"ph\":%.2f,\"lightLux\":%.0f,\"nutrientPercent\":%.1f%s},"
       "\"qualityFlags\":[\"%.*s\"],"
       "\"simulationScenario\":\"%.*s\"}],\"isReplay\":%s,"
       "\"createdFromSd\":%s}}",
@@ -124,7 +145,7 @@ inline std::optional<std::string> build_device_telemetry_payload(
       static_cast<unsigned long long>(reading.sequence),
       static_cast<int>(observedAt.size()), observedAt.data(),
       static_cast<unsigned long long>(uptimeMs), reading.temperatureC, reading.ph,
-      reading.lightLux, reading.nutrientPercent,
+      reading.lightLux, reading.nutrientPercent, npkFragment,
       static_cast<int>(qualityFlag.size()), qualityFlag.data(),
       static_cast<int>(scenario.size()), scenario.data(),
       isReplay ? "true" : "false", createdFromSd ? "true" : "false");

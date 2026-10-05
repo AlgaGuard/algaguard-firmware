@@ -34,6 +34,42 @@ void test_device_payload_uses_canonical_schema_and_explicit_source() {
   TEST_ASSERT_EQUAL(std::string::npos, value->find("password"));
 }
 
+std::string formatted(const char* key, double value) {
+  char buffer[64]{};
+  std::snprintf(buffer, sizeof(buffer), "\"%s\":%.2f", key, value);
+  return buffer;
+}
+
+void test_payload_carries_npk_estimates_from_the_same_ph_and_temperature() {
+  const auto value = algaguard::build_device_telemetry_payload(
+      "AG-000001", profile, reading(), "2026-08-02T10:00:00Z",
+      "2026-08-02T10:00:00Z", "20000000-0000-4000-8000-000000000002",
+      "30000000-0000-4000-8000-000000000003", 5000, false, false, "REAL",
+      algaguard::kScenarioRealSensors);
+  TEST_ASSERT_TRUE(value.has_value());
+  const auto npk = algaguard::estimate_npk(7.1, 24.2);
+  TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                        value->find(formatted("nitrateMgL", *npk.nitrateMgL)));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                        value->find(formatted("phosphateMgL", *npk.phosphateMgL)));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                        value->find(formatted("potassiumMgL", *npk.potassiumMgL)));
+}
+
+void test_out_of_training_range_ph_omits_nitrate_and_phosphate_only() {
+  auto acidic = reading();
+  acidic.ph = 6.0;
+  const auto value = algaguard::build_device_telemetry_payload(
+      "AG-000001", profile, acidic, "2026-08-02T10:00:00Z",
+      "2026-08-02T10:00:00Z", "20000000-0000-4000-8000-000000000002",
+      "30000000-0000-4000-8000-000000000003", 5000, false, false, "REAL",
+      algaguard::kScenarioRealSensors);
+  TEST_ASSERT_TRUE(value.has_value());
+  TEST_ASSERT_EQUAL(std::string::npos, value->find("nitrateMgL"));
+  TEST_ASSERT_EQUAL(std::string::npos, value->find("phosphateMgL"));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, value->find("\"potassiumMgL\":"));
+}
+
 void test_real_sensor_payload_reports_real_quality_and_scenario() {
   const auto value = algaguard::build_device_telemetry_payload(
       "AG-000001", profile, reading(), "2026-08-02T10:00:00Z",
@@ -125,6 +161,8 @@ void test_ack_mismatch_and_retry_exhaustion_do_not_release_early() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_device_payload_uses_canonical_schema_and_explicit_source);
+  RUN_TEST(test_payload_carries_npk_estimates_from_the_same_ph_and_temperature);
+  RUN_TEST(test_out_of_training_range_ph_omits_nitrate_and_phosphate_only);
   RUN_TEST(test_real_sensor_payload_reports_real_quality_and_scenario);
   RUN_TEST(test_degraded_reading_is_flagged);
   RUN_TEST(test_replayed_sd_sample_preserves_original_observed_at_distinct_from_sent_at);
