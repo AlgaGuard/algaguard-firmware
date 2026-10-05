@@ -101,6 +101,7 @@ inline std::array<std::uint8_t, 5> glyph(char raw) {
   if (value == '_') return {{0, 0, 0, 0, 7}};
   if (value == ':') return {{0, 2, 0, 2, 0}};
   if (value == '.') return {{0, 0, 0, 0, 2}};
+  if (value == '/') return {{1, 1, 2, 4, 4}};
   return {{0, 0, 0, 0, 0}};
 }
 

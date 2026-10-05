@@ -32,10 +32,11 @@ void test_local_demo_generator_is_deterministic_and_bounded() {
 // just a content-page identifier passed straight into local_demo_screen().
 void test_local_demo_all_pages_are_safe_and_explicit() {
   const auto reading = algaguard::LocalDemoGenerator{}.next(1);
-  constexpr std::array<algaguard::LocalDemoPage, 6> pages{{
+  constexpr std::array<algaguard::LocalDemoPage, 7> pages{{
       algaguard::LocalDemoPage::kTemperaturePh,
       algaguard::LocalDemoPage::kLight,
       algaguard::LocalDemoPage::kNutrients,
+      algaguard::LocalDemoPage::kNpkEstimates,
       algaguard::LocalDemoPage::kDeviceStatus,
       algaguard::LocalDemoPage::kNetwork,
       algaguard::LocalDemoPage::kAbout,
@@ -57,6 +58,29 @@ void test_local_demo_all_pages_are_safe_and_explicit() {
   TEST_ASSERT_TRUE(sawLocal);
   TEST_ASSERT_TRUE(sawOffline);
   TEST_ASSERT_TRUE(sawNotConfigured);
+}
+
+void test_npk_page_shows_estimates_and_marks_p_and_k_experimental() {
+  algaguard::LocalDemoReading reading{1, 24.2, 7.1, 900.0, 63.4};
+  const auto npk = algaguard::estimate_npk(reading.ph, reading.temperatureC);
+  const auto screen = algaguard::local_demo_screen(
+      algaguard::LocalDemoPage::kNpkEstimates, reading, true);
+  TEST_ASSERT_TRUE(screen.safe());
+  TEST_ASSERT_EQUAL_STRING("NPK EST", screen.lines[0].c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      algaguard::npk_estimate_line("N", npk.nitrateMgL, false).c_str(),
+      screen.lines[1].c_str());
+  TEST_ASSERT_EQUAL(std::string::npos, screen.lines[1].find("EXPERIMENTAL"));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, screen.lines[2].find("EXPERIMENTAL"));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, screen.lines[3].find("EXPERIMENTAL"));
+  // Every line fits the 30 characters the OLED font can draw across.
+  for (const auto& line : screen.lines) TEST_ASSERT_TRUE(line.size() <= 30);
+
+  reading.ph = 6.0;  // below the model's training range
+  const auto outOfRange = algaguard::local_demo_screen(
+      algaguard::LocalDemoPage::kNpkEstimates, reading, true);
+  TEST_ASSERT_EQUAL_STRING("N OUT OF RANGE", outOfRange.lines[1].c_str());
+  TEST_ASSERT_EQUAL_STRING("P OUT OF RANGE", outOfRange.lines[2].c_str());
 }
 
 void test_local_demo_network_forget_requires_confirmation() {
@@ -84,6 +108,7 @@ int main(int, char**) {
   RUN_TEST(test_local_demo_guard_model);
   RUN_TEST(test_local_demo_generator_is_deterministic_and_bounded);
   RUN_TEST(test_local_demo_all_pages_are_safe_and_explicit);
+  RUN_TEST(test_npk_page_shows_estimates_and_marks_p_and_k_experimental);
   RUN_TEST(test_local_demo_network_forget_requires_confirmation);
   return UNITY_END();
 }

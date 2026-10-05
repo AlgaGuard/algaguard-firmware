@@ -111,6 +111,7 @@ enum class AppScreen : std::uint8_t {
   kTemperaturePh,
   kLight,
   kNutrients,
+  kNpkEstimates,
   kDeviceStatus,
   kNetwork,
   kAbout,
@@ -127,20 +128,22 @@ struct MainMenuItem {
   AppScreen screen;
 };
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
-constexpr std::array<MainMenuItem, 7> kMainMenuItems{{
+constexpr std::array<MainMenuItem, 8> kMainMenuItems{{
     {"PAIR DEVICE", AppScreen::kPairDevice},
     {"TEMP AND PH", AppScreen::kTemperaturePh},
     {"LIGHT", AppScreen::kLight},
     {"NUTRIENTS", AppScreen::kNutrients},
+    {"NPK ESTIMATES", AppScreen::kNpkEstimates},
     {"DEVICE STATUS", AppScreen::kDeviceStatus},
     {"NETWORK", AppScreen::kNetwork},
     {"ABOUT", AppScreen::kAbout},
 }};
 #else
-constexpr std::array<MainMenuItem, 6> kMainMenuItems{{
+constexpr std::array<MainMenuItem, 7> kMainMenuItems{{
     {"TEMP AND PH", AppScreen::kTemperaturePh},
     {"LIGHT", AppScreen::kLight},
     {"NUTRIENTS", AppScreen::kNutrients},
+    {"NPK ESTIMATES", AppScreen::kNpkEstimates},
     {"DEVICE STATUS", AppScreen::kDeviceStatus},
     {"NETWORK", AppScreen::kNetwork},
     {"ABOUT", AppScreen::kAbout},
@@ -169,6 +172,7 @@ algaguard::LocalDemoPage to_local_demo_page(AppScreen screen) {
     case AppScreen::kTemperaturePh: return algaguard::LocalDemoPage::kTemperaturePh;
     case AppScreen::kLight: return algaguard::LocalDemoPage::kLight;
     case AppScreen::kNutrients: return algaguard::LocalDemoPage::kNutrients;
+    case AppScreen::kNpkEstimates: return algaguard::LocalDemoPage::kNpkEstimates;
     case AppScreen::kDeviceStatus: return algaguard::LocalDemoPage::kDeviceStatus;
     case AppScreen::kNetwork: return algaguard::LocalDemoPage::kNetwork;
     case AppScreen::kAbout:
@@ -1032,6 +1036,7 @@ void sampling_task(void*) {
     if (visible_screen == AppScreen::kTemperaturePh ||
         visible_screen == AppScreen::kLight ||
         visible_screen == AppScreen::kNutrients ||
+        visible_screen == AppScreen::kNpkEstimates ||
         visible_screen == AppScreen::kDeviceStatus)
       screen_revision.fetch_add(1, std::memory_order_release);
 #if defined(ALGAGUARD_ENABLE_DEVICE_MQTT_TELEMETRY)

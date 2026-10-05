@@ -4,9 +4,11 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <string>
 
 #include "algaguard/display.hpp"
+#include "algaguard/npk_estimator.hpp"
 #include "algaguard/nutrient_index.hpp"
 
 namespace algaguard {
@@ -63,6 +65,7 @@ enum class LocalDemoPage : std::uint8_t {
   kTemperaturePh,
   kLight,
   kNutrients,
+  kNpkEstimates,
   kDeviceStatus,
   kNetwork,
   kAbout,
@@ -110,6 +113,21 @@ inline std::string local_demo_value(const char* label, double value,
   return output;
 }
 
+// One OLED line per estimate, e.g. "P 9.8 MG/L EXPERIMENTAL" (23 of the 30
+// characters a line fits), or "N OUT OF RANGE" when the device left that
+// estimate out because its input was outside the model's training range.
+inline std::string npk_estimate_line(const char* label,
+                                     const std::optional<double>& value,
+                                     bool experimental) {
+  char output[40]{};
+  if (!value)
+    std::snprintf(output, sizeof(output), "%s OUT OF RANGE", label);
+  else
+    std::snprintf(output, sizeof(output), "%s %.1f MG/L%s", label, *value,
+                  experimental ? " EXPERIMENTAL" : "");
+  return output;
+}
+
 inline DiagnosticScreen local_demo_screen(LocalDemoPage page,
                                           const LocalDemoReading& reading,
                                           bool advertisingActive,
@@ -135,6 +153,12 @@ inline DiagnosticScreen local_demo_screen(LocalDemoPage page,
       return {{{"DEMO NUTRIENTS",
                 local_demo_value("NSI", reading.nutrientPercent, 1, " PCT"),
                 "DEV GENERATED", cloudState}}};
+    case LocalDemoPage::kNpkEstimates: {
+      const NpkEstimate npk = estimate_npk(reading.ph, reading.temperatureC);
+      return {{{"NPK EST", npk_estimate_line("N", npk.nitrateMgL, false),
+                npk_estimate_line("P", npk.phosphateMgL, true),
+                npk_estimate_line("K", npk.potassiumMgL, true)}}};
+    }
     case LocalDemoPage::kDeviceStatus:
       return {{{advertisingActive ? "BLE ADV ACTIVE" : "BLE ADV INIT",
                 wifiState, cloudState, "DEV GENERATED"}}};
