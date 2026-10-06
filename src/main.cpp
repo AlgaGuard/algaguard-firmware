@@ -1379,7 +1379,15 @@ void credential_bootstrap_task(void*) {
 #endif
 }  // namespace
 
+#if defined(ALGAGUARD_HARDWARE_CHECK)
+void algaguard_run_hardware_check();  // src/hardware_check.cpp
+#endif
+
 extern "C" void app_main() {
+#if defined(ALGAGUARD_HARDWARE_CHECK)
+  algaguard_run_hardware_check();
+  return;
+#endif
   esp_chip_info_t chip{};
   esp_chip_info(&chip);
   board_profile.chip_is_esp32s3 = chip.model == CHIP_ESP32S3;

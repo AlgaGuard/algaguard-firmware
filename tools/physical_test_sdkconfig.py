@@ -8,6 +8,7 @@ Import("env")
 uart_console_profiles = {
     "esp32-s3-dev-ble-wifi-physical-test",
     "esp32-s3-dev-qr-onboarding-demo",
+    "esp32-s3-dev-hardware-check",
 }
 
 if env.subst("$PIOENV") in uart_console_profiles:
