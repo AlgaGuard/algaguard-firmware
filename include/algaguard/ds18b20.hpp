@@ -62,6 +62,11 @@ class Ds18b20Sensor {
     portEXIT_CRITICAL(&lock_);
     if (!present) return std::nullopt;
     if (crc8_dallas(scratchpad.data(), 8) != scratchpad[8]) return std::nullopt;
+    // An all-zero scratchpad passes the CRC (CRC8 of zeros is zero), which is
+    // exactly what a data line shorted LOW reads -- it would otherwise be
+    // reported as a real 0.00 C. The configuration register (byte 4) always
+    // has bit 7 clear and bits 0-4 set, so it must look like that.
+    if ((scratchpad[4] & 0x9FU) != 0x1FU) return std::nullopt;
     const std::int16_t raw = static_cast<std::int16_t>(
         (static_cast<std::uint16_t>(scratchpad[1]) << 8) | scratchpad[0]);
     return raw / 16.0;
