@@ -445,6 +445,63 @@ void check_analog() {
                  "is usually around 1500-2500 mV");
 }
 
+// Talks to the card by hand (slow bit-banged SPI, no driver) to say which line
+// is at fault when the driver only reports a timeout. MISO gets a pull-down,
+// so a line nothing drives reads 0 rather than floating.
+void sd_line_probe() {
+  const auto cs = static_cast<gpio_num_t>(hw::kSdCs);
+  const auto mosi = static_cast<gpio_num_t>(hw::kSdMosi);
+  const auto sck = static_cast<gpio_num_t>(hw::kSdSck);
+  const auto miso = static_cast<gpio_num_t>(hw::kSdMiso);
+  for (const auto pin : {cs, mosi, sck}) {
+    gpio_reset_pin(pin);
+    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+  }
+  gpio_reset_pin(miso);
+  gpio_set_direction(miso, GPIO_MODE_INPUT);
+  gpio_set_pull_mode(miso, GPIO_PULLDOWN_ONLY);
+  gpio_set_level(cs, 1);
+  gpio_set_level(sck, 0);
+  const auto transfer = [&](std::uint8_t out) {
+    std::uint8_t in = 0;
+    for (int bit = 7; bit >= 0; --bit) {
+      gpio_set_level(mosi, (out >> bit) & 1U);
+      esp_rom_delay_us(5);
+      gpio_set_level(sck, 1);
+      esp_rom_delay_us(5);
+      in = static_cast<std::uint8_t>((in << 1) | gpio_get_level(miso));
+      gpio_set_level(sck, 0);
+    }
+    return in;
+  };
+  for (int index = 0; index < 10; ++index) transfer(0xFF);  // >= 74 wake-up clocks
+  gpio_set_level(cs, 0);
+  const std::uint8_t selected_idle = transfer(0xFF);
+  for (const std::uint8_t byte : {0x40, 0x00, 0x00, 0x00, 0x00, 0x95}) transfer(byte);  // CMD0
+  std::uint8_t response = 0xFF;
+  for (int index = 0; index < 10 && response == 0xFF; ++index) response = transfer(0xFF);
+  gpio_set_level(cs, 1);
+  transfer(0xFF);
+  for (const auto pin : {cs, mosi, sck, miso}) gpio_reset_pin(pin);
+
+  char detail[64];
+  std::snprintf(detail, sizeof(detail), "line test: MISO idle 0x%02X, CMD0 reply 0x%02X",
+                selected_idle, response);
+  info("SD LINES", detail);
+  if (response == 0x01)
+    std::printf("              the card answered: wiring is OK. Use a FAT32 card of 32 GB "
+                "or less; if it still fails, shorten the SD wires\n");
+  else if (selected_idle == 0x00 && response == 0x00)
+    std::printf("              MISO stays LOW: nothing drives it. MISO -> GPIO13 not connected, "
+                "or the module/card has no power (a module with a regulator needs 5V on VCC)\n");
+  else if (response == 0xFF)
+    std::printf("              MISO is HIGH but the card never answers: check the card is "
+                "pushed in, CS -> GPIO10, SCK -> GPIO12, MOSI -> GPIO11, and 5V on VCC if the "
+                "module has a regulator\n");
+  else
+    std::printf("              garbled reply: a weak joint or crossed wires on MOSI/MISO/SCK\n");
+}
+
 void check_sd() {
   heading("5. SD card (CS 10, MOSI 11, SCK 12, MISO 13)");
   spi_bus_config_t spi{};
@@ -474,6 +531,7 @@ void check_sd() {
                ? "card answered but is not FAT32-formatted (format it on the PC)"
                : "card inserted? CS->GPIO10, MOSI->11, SCK->12, MISO->13, VCC 3.3V, GND");
     spi_bus_free(SPI2_HOST);
+    sd_line_probe();
     return;
   }
   const double megabytes = static_cast<double>(card->csd.capacity) *
