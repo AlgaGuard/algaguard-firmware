@@ -529,14 +529,20 @@ void check_buttons() {
   inputs.pull_up_en = GPIO_PULLUP_ENABLE;
   gpio_config(&inputs);
   wait_ms(10);
-  for (std::size_t index = 0; index < kButtons.size(); ++index)
-    if (gpio_get_level(static_cast<gpio_num_t>(kButtons[index])) == 0)
+  // A button already LOW before anyone touches it is stuck pressed; its
+  // "press" must not count as a pass.
+  std::array<bool, 4> stuck{};
+  std::array<int, 4> last{};
+  for (std::size_t index = 0; index < kButtons.size(); ++index) {
+    last[index] = gpio_get_level(static_cast<gpio_num_t>(kButtons[index]));
+    stuck[index] = last[index] == 0;
+    if (stuck[index])
       std::printf("              warning: %s reads PRESSED without being touched -> "
                   "shorted to GND or wired across the wrong legs\n",
                   kButtonNames[index]);
+  }
   std::printf("              press each button once now (UP, DOWN, SELECT, BACK) - 30 s\n");
-  std::array<bool, 4> seen{};
-  std::array<int, 4> last{1, 1, 1, 1};
+  std::array<bool, 4> seen = stuck;  // nothing to wait for on a stuck button
   const TickType_t end = xTaskGetTickCount() + pdMS_TO_TICKS(30000);
   while (xTaskGetTickCount() < end &&
          !(seen[0] && seen[1] && seen[2] && seen[3])) {
@@ -555,8 +561,14 @@ void check_buttons() {
     wait_ms(20);
   }
   for (std::size_t index = 0; index < kButtons.size(); ++index)
-    report(kButtonNames[index], seen[index], seen[index] ? "press detected" : "no press detected",
-           "one leg to the GPIO, the other to GND (use diagonal legs on a 4-leg switch)");
+    report(kButtonNames[index], seen[index] && !stuck[index],
+           stuck[index] ? "stuck PRESSED (LOW without being touched)"
+           : seen[index] ? "press detected"
+                         : "no press detected",
+           stuck[index] ? "the switch is on two always-connected legs: turn it 90 degrees or "
+                          "use diagonal legs; or the GPIO is bridged to GND"
+                        : "one leg to the GPIO, the other to GND (use diagonal legs on a 4-leg "
+                          "switch)");
 }
 
 void summary() {
@@ -579,15 +591,71 @@ void summary() {
              "LIVE VALUES ON SERIAL"});
 }
 
+// What a button pin is connected to right now, independent of how the button
+// is wired: read it once pulled up and once pulled down. "open" = nothing
+// drives it (button released, wired GPIO-to-GND as intended); "GND"/"3V3" =
+// tied there (pressed, stuck, or wired to the wrong rail).
+bool reads_high_with(gpio_num_t gpio, gpio_pull_mode_t pull) {
+  gpio_set_pull_mode(gpio, pull);
+  esp_rom_delay_us(200);
+  return gpio_get_level(gpio) == 1;
+}
+
+const char* button_wiring(int pin) {
+  const auto gpio = static_cast<gpio_num_t>(pin);
+  const bool with_pull_down = reads_high_with(gpio, GPIO_PULLDOWN_ONLY);
+  const bool with_pull_up = reads_high_with(gpio, GPIO_PULLUP_ONLY);
+  if (with_pull_up && !with_pull_down) return "OPEN";
+  if (!with_pull_up) return "GND";
+  return "3V3";
+}
+
 void live_values() {
   heading("LIVE VALUES (every 2 s, press RESET to rerun the checks)");
-  std::array<int, 4> last{1, 1, 1, 1};
+  std::printf("  buttons show what each pin touches: OPEN = released, GND = pressed "
+              "(correct wiring), 3V3 = wired to 3.3V instead of GND\n");
+  std::array<const char*, 4> last{"", "", "", ""};
+  // Free GPIOs (not flash/PSRAM 26-37, USB 19/20, UART 43/44, onboard RGB 38
+  // or any pin this board uses), watched for a button wired to the wrong pin.
+  // GPIO0 is the board's own BOOT button.
+  constexpr std::array<int, 12> kSparePins{0, 3, 18, 21, 39, 40, 41, 42, 45, 46, 47, 48};
+  std::array<int, kSparePins.size()> spare_last{};
+  for (std::size_t index = 0; index < kSparePins.size(); ++index) {
+    const auto gpio = static_cast<gpio_num_t>(kSparePins[index]);
+    gpio_reset_pin(gpio);
+    gpio_set_direction(gpio, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(gpio, GPIO_PULLUP_ONLY);
+  }
+  wait_ms(5);
+  std::string spare_low;
+  for (std::size_t index = 0; index < kSparePins.size(); ++index) {
+    spare_last[index] = gpio_get_level(static_cast<gpio_num_t>(kSparePins[index]));
+    if (spare_last[index] == 0) spare_low += " GPIO" + std::to_string(kSparePins[index]);
+  }
+  if (!spare_low.empty())
+    std::printf("  free pins already LOW (tied to GND?):%s\n", spare_low.c_str());
   TickType_t next = 0;
   while (true) {
+    bool changed = false;
     for (std::size_t index = 0; index < kButtons.size(); ++index) {
-      const int level = gpio_get_level(static_cast<gpio_num_t>(kButtons[index]));
-      if (level == 0 && last[index] == 1) std::printf("  button %s\n", kButtonNames[index]);
-      last[index] = level;
+      const char* state = button_wiring(kButtons[index]);
+      if (std::strcmp(state, last[index]) != 0) {
+        std::printf("  button %-6s -> %s\n", kButtonNames[index], state);
+        last[index] = state;
+        changed = true;
+      }
+    }
+    if (changed)
+      oled_show({"BUTTONS", std::string("UP:") + last[0] + " DN:" + last[1],
+                 std::string("SEL:") + last[2] + " BK:" + last[3], "PRESS TO TEST"});
+    // A button wired to some other free pin shows up here instead.
+    for (std::size_t index = 0; index < kSparePins.size(); ++index) {
+      const int level = gpio_get_level(static_cast<gpio_num_t>(kSparePins[index]));
+      if (level != spare_last[index]) {
+        std::printf("  GPIO%d -> %s  (not a button pin: is a button wired here?)\n",
+                    kSparePins[index], level == 0 ? "LOW" : "HIGH");
+        spare_last[index] = level;
+      }
     }
     if (xTaskGetTickCount() >= next) {
       next = xTaskGetTickCount() + pdMS_TO_TICKS(2000);
