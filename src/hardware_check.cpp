@@ -434,9 +434,10 @@ void check_analog() {
              input.pin == hw::kTdsAdcPin
                  ? "TDS board signal (A) -> GPIO1, and the board's VCC/GND"
                  : "pH board signal (Po) -> GPIO2, and the board's VCC/GND");
-    } else if (mean > 3200) {
-      report(input.name, false, std::string(detail) + " - stuck at 3.3V",
-             "signal wire touching 3.3V, or the board powered from 5V");
+    } else if (mean > 3100) {  // the ADC tops out around 3.1-3.2 V
+      report(input.name, false, std::string(detail) + " - at the top of the ADC range",
+             "signal above 3.3V (board on 5V: add a 10k/20k divider), touching 3.3V, or "
+             "a dry/unplugged probe");
     } else {
       report(input.name, true, detail);
     }
@@ -482,6 +483,11 @@ void sd_line_probe() {
   for (int index = 0; index < 10 && response == 0xFF; ++index) response = transfer(0xFF);
   gpio_set_level(cs, 1);
   transfer(0xFF);
+  // With a pull-up instead: an unconnected MISO now reads HIGH, while one
+  // shorted to GND (or held down by an unpowered module) still reads LOW.
+  gpio_set_pull_mode(miso, GPIO_PULLUP_ONLY);
+  esp_rom_delay_us(500);
+  const bool miso_low_with_pull_up = gpio_get_level(miso) == 0;
   for (const auto pin : {cs, mosi, sck, miso}) gpio_reset_pin(pin);
 
   char detail[64];
@@ -491,9 +497,13 @@ void sd_line_probe() {
   if (response == 0x01)
     std::printf("              the card answered: wiring is OK. Use a FAT32 card of 32 GB "
                 "or less; if it still fails, shorten the SD wires\n");
+  else if (selected_idle == 0x00 && response == 0x00 && miso_low_with_pull_up)
+    std::printf("              MISO is held LOW even against a pull-up: GPIO13 is shorted to GND, "
+                "or the module is unpowered and its level shifter pulls MISO down (a module "
+                "with a regulator needs 5V on VCC)\n");
   else if (selected_idle == 0x00 && response == 0x00)
-    std::printf("              MISO stays LOW: nothing drives it. MISO -> GPIO13 not connected, "
-                "or the module/card has no power (a module with a regulator needs 5V on VCC)\n");
+    std::printf("              MISO floats (reads HIGH with a pull-up, LOW with a pull-down): the "
+                "MISO wire is not reaching GPIO13, or the card/module has no power\n");
   else if (response == 0xFF)
     std::printf("              MISO is HIGH but the card never answers: check the card is "
                 "pushed in, CS -> GPIO10, SCK -> GPIO12, MOSI -> GPIO11, and 5V on VCC if the "
