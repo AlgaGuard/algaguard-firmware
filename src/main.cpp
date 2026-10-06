@@ -982,9 +982,10 @@ std::optional<std::time_t> current_trusted_utc() {
 #endif
 
 void sampling_task(void*) {
-  std::uint64_t sequence = 1;
+  // Each is unused in some build configurations (cppcheck checks them all).
+  [[maybe_unused]] std::uint64_t sequence = 1;
 #if defined(ALGAGUARD_ENABLE_REAL_SENSORS)
-  bool replay_ack_pending = false;
+  [[maybe_unused]] bool replay_ack_pending = false;
 #endif
   while (true) {
 #if defined(ALGAGUARD_LOCAL_DEMO_MODE)
@@ -994,7 +995,7 @@ void sampling_task(void*) {
     }
 #if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
     const auto reading = local_demo_generator.next(sequence++);
-    constexpr std::string_view quality_flag = "SIMULATED";
+    [[maybe_unused]] constexpr std::string_view quality_flag = "SIMULATED";
 #elif defined(ALGAGUARD_ENABLE_REAL_SENSORS)
     // Non-blocking pipeline: read back the conversion started on the
     // *previous* tick (>=1000ms ago, comfortably past DS18B20's ~750ms
@@ -1025,7 +1026,8 @@ void sampling_task(void*) {
         sequence++, last_good_temperature_c, last_good_ph, last_good_light_lux,
         algaguard::nutrient_percent(tds_reading.value_or(0.0), last_good_ph,
                                     last_good_temperature_c)};
-    const std::string_view quality_flag = degraded ? "DEGRADED" : "REAL";
+    [[maybe_unused]] const std::string_view quality_flag =
+        degraded ? "DEGRADED" : "REAL";
 #endif
     portENTER_CRITICAL(&local_demo_lock);
     local_demo_reading = reading;

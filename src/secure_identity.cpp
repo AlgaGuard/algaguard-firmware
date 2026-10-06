@@ -126,7 +126,7 @@ bool ec_private_key_to_sec1_der(const unsigned char* scalar, std::size_t scalar_
   if (part < 0) return false;
   parameters_inner += part;
   part = mbedtls_asn1_write_tag(&cursor, begin,
-      MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 0);
+      MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED);  // [0]
   if (part < 0) return false;
   written += parameters_inner + part;
 
