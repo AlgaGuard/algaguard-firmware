@@ -368,7 +368,7 @@ bool EspDeviceTelemetryRuntime::start(std::string deviceId,
   return true;
 }
 
-void EspDeviceTelemetryRuntime::poll(const LocalDemoReading& reading,
+bool EspDeviceTelemetryRuntime::poll(const LocalDemoReading& reading,
                                      std::uint64_t uptimeMs,
                                      SampleOrigin origin,
                                      std::string_view qualityFlag,
@@ -378,7 +378,7 @@ void EspDeviceTelemetryRuntime::poll(const LocalDemoReading& reading,
   // whether real sensor readings reach the platform, so profileInstalled is
   // deliberately not part of this condition.
   if (!impl_->connected.load(std::memory_order_acquire) || !impl_->lock())
-    return;
+    return false;
   if (impl_->window.exhausted(uptimeMs)) {
     impl_->window.clearPending();
     ESP_LOGW(kTag, "DEVICE_TELEMETRY_ACK_TIMEOUT retries=3 dropped=1");
@@ -387,20 +387,20 @@ void EspDeviceTelemetryRuntime::poll(const LocalDemoReading& reading,
     const std::string payload{impl_->window.pendingPayload()};
     if (impl_->window.retry(uptimeMs)) (void)impl_->publish(impl_->telemetryTopic, payload);
     impl_->unlock();
-    return;
+    return false;
   }
   if (impl_->window.pending() || uptimeMs < impl_->lastPublishMs + kPublishIntervalMs) {
     impl_->unlock();
-    return;
+    return false;
   }
   const auto now = utcNow();
   if (!now) {
     impl_->unlock();
-    return;
+    return false;
   }
   if (origin == SampleOrigin::kReplayed && !originalObservedAtUtc) {
     impl_->unlock();
-    return;
+    return false;
   }
   const std::string_view observedAt =
       origin == SampleOrigin::kReplayed ? *originalObservedAtUtc : *now;
@@ -415,13 +415,16 @@ void EspDeviceTelemetryRuntime::poll(const LocalDemoReading& reading,
       impl_->deviceId, impl_->window.profile(), reading, *now, observedAt,
       messageId, batchId, uptimeMs, origin == SampleOrigin::kReplayed,
       origin == SampleOrigin::kReplayed, qualityFlag, scenario);
+  bool published = false;
   if (payload && impl_->window.begin(batchId, *payload, uptimeMs)) {
+    published = true;
     impl_->lastPublishMs = uptimeMs;
     (void)impl_->publish(impl_->telemetryTopic, *payload);
     ESP_LOGI(kTag, "DEVICE_TELEMETRY_PUBLISHED qos=1 samples=1 replay=%s",
              origin == SampleOrigin::kReplayed ? "true" : "false");
   }
   impl_->unlock();
+  return published;
 }
 
 bool EspDeviceTelemetryRuntime::connected() const {

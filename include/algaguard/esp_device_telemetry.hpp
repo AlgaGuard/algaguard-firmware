@@ -31,7 +31,10 @@ class EspDeviceTelemetryRuntime {
   // based on whether every sensor read succeeded this tick. The wire
   // "simulationScenario" value is decided internally from which sensor
   // source this build was compiled with, not passed by the caller.
-  void poll(const LocalDemoReading& reading, std::uint64_t uptimeMs,
+  // Returns true only when this call published `reading` as a new batch
+  // (false when not connected, between publish intervals, or while an earlier
+  // batch still awaits its ack), so callers know whether it was really sent.
+  bool poll(const LocalDemoReading& reading, std::uint64_t uptimeMs,
             SampleOrigin origin = SampleOrigin::kLive,
             std::string_view qualityFlag = "SIMULATED",
             std::optional<std::string> originalObservedAtUtc = std::nullopt);

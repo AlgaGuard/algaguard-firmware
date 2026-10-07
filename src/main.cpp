@@ -1,4 +1,5 @@
 #include "algaguard/config.hpp"
+#include "algaguard/persistent_sequence.hpp"
 #include "algaguard/ble_provisioning_transport.hpp"
 #include "algaguard/brand_splash.hpp"
 #include "algaguard/esp_idf_wifi_connection_adapter.hpp"
@@ -36,6 +37,7 @@
 #include "esp_psram.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 #if defined(ALGAGUARD_ENABLE_QR_ONBOARDING)
 #include "qrcode.h"
@@ -1016,9 +1018,41 @@ std::optional<std::time_t> current_trusted_utc() {
 }
 #endif
 
+// Telemetry sequence numbers must keep increasing across reboots: the cloud
+// drops any (device, sequence) it has already stored as a duplicate. The
+// reservation lives in its own NVS namespace (see persistent_sequence.hpp).
+algaguard::PersistentSequence telemetry_sequence;
+
+std::optional<std::uint64_t> read_reserved_sequence() {
+  nvs_handle_t handle{};
+  if (nvs_open("ag_sequence", NVS_READONLY, &handle) != ESP_OK) return std::nullopt;
+  std::uint64_t value = 0;
+  const esp_err_t result = nvs_get_u64(handle, "reserved", &value);
+  nvs_close(handle);
+  return result == ESP_OK ? std::optional<std::uint64_t>{value} : std::nullopt;
+}
+
+void store_reserved_sequence(std::uint64_t value) {
+  nvs_handle_t handle{};
+  if (nvs_open("ag_sequence", NVS_READWRITE, &handle) != ESP_OK ||
+      nvs_set_u64(handle, "reserved", value) != ESP_OK || nvs_commit(handle) != ESP_OK)
+    ESP_LOGW(kTag, "SEQUENCE_RESERVATION_NOT_SAVED");
+  nvs_close(handle);
+}
+
+[[maybe_unused]] std::uint64_t next_sequence() {
+  std::optional<std::uint64_t> persist;
+  const auto value = telemetry_sequence.next(persist);
+  if (persist) store_reserved_sequence(*persist);
+  return value;
+}
+
 void sampling_task(void*) {
-  // Each is unused in some build configurations (cppcheck checks them all).
-  [[maybe_unused]] std::uint64_t sequence = 1;
+  // This task can start before startup's storage step; nvs_flash_init()
+  // returns ESP_OK when NVS is already initialized, so make sure it is ready.
+  if (nvs_flash_init() != ESP_OK) ESP_LOGW(kTag, "SEQUENCE_NVS_UNAVAILABLE");
+  store_reserved_sequence(telemetry_sequence.begin(read_reserved_sequence()));
+  // Unused in some build configurations (cppcheck checks them all).
 #if defined(ALGAGUARD_ENABLE_REAL_SENSORS)
   [[maybe_unused]] bool replay_ack_pending = false;
 #endif
@@ -1029,7 +1063,7 @@ void sampling_task(void*) {
       continue;
     }
 #if defined(ALGAGUARD_ENABLE_LOCAL_MOCK_SENSORS)
-    const auto reading = local_demo_generator.next(sequence++);
+    const auto reading = local_demo_generator.next(next_sequence());
     [[maybe_unused]] constexpr std::string_view quality_flag = "SIMULATED";
 #elif defined(ALGAGUARD_ENABLE_REAL_SENSORS)
     // Non-blocking pipeline: read back the conversion started on the
@@ -1058,7 +1092,7 @@ void sampling_task(void*) {
     const auto tds_reading = real_analog_sensors.readTdsPpm(last_good_temperature_c);
     if (!tds_reading) degraded = true;
     const algaguard::LocalDemoReading reading{
-        sequence++, last_good_temperature_c, last_good_ph, last_good_light_lux,
+        next_sequence(), last_good_temperature_c, last_good_ph, last_good_light_lux,
         algaguard::nutrient_percent(tds_reading.value_or(0.0), last_good_ph,
                                     last_good_temperature_c)};
     [[maybe_unused]] const std::string_view quality_flag =
@@ -1092,19 +1126,32 @@ void sampling_task(void*) {
         real_sd_queue.acknowledgeOldestUnread();
         replay_ack_pending = false;
       }
-      if (const auto buffered = real_sd_queue.peekOldestUnread()) {
-        if (const auto observedAt = format_utc_seconds(buffered->observedAtUnix)) {
-          const algaguard::LocalDemoReading replay{
-              buffered->sequence, buffered->temperatureC, buffered->ph,
-              buffered->lightLux, buffered->nutrientPercent};
-          device_telemetry_runtime.poll(replay, uptime_ms,
-                                        algaguard::SampleOrigin::kReplayed,
-                                        "REAL", *observedAt);
+      // One batch is sent per publish interval, so live readings and the SD
+      // backlog take turns: otherwise a long backlog (hours offline) blocked
+      // live data until it drained. A buffered record is only marked sent
+      // when poll() really published it -- it used to be dropped from the
+      // card on every tick between publish intervals, unsent.
+      static bool replay_turn = false;
+      const auto buffered = real_sd_queue.peekOldestUnread();
+      const auto observedAt =
+          buffered ? format_utc_seconds(buffered->observedAtUnix) : std::nullopt;
+      if (buffered && !observedAt) {
+        real_sd_queue.acknowledgeOldestUnread();  // unusable record: skip it
+      } else if (buffered && replay_turn) {
+        const algaguard::LocalDemoReading replay{
+            buffered->sequence, buffered->temperatureC, buffered->ph,
+            buffered->lightLux, buffered->nutrientPercent};
+        if (device_telemetry_runtime.poll(replay, uptime_ms,
+                                          algaguard::SampleOrigin::kReplayed,
+                                          "REAL", *observedAt)) {
           replay_ack_pending = true;
+          replay_turn = false;
         }
+      } else if (device_telemetry_runtime.poll(reading, uptime_ms,
+                                               algaguard::SampleOrigin::kLive,
+                                               quality_flag)) {
+        replay_turn = buffered.has_value();
       }
-      device_telemetry_runtime.poll(reading, uptime_ms,
-                                    algaguard::SampleOrigin::kLive, quality_flag);
     } else if (const auto observedAt = current_trusted_utc()) {
       algaguard::SdQueueRecord record{};
       record.sequence = reading.sequence;
@@ -1129,7 +1176,7 @@ void sampling_task(void*) {
       continue;
     }
     const auto sample = simulator.next(
-        sequence++,
+        next_sequence(),
         static_cast<std::uint64_t>(xTaskGetTickCount()) * portTICK_PERIOD_MS);
     queue.push(sample);
     batcher.add(sample);
