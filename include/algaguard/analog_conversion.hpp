@@ -23,11 +23,14 @@ inline double tds_ppm_from_voltage(double voltageV, double temperatureC) {
 // Wiring: the PH-4502C runs on 5 V and its Po output reaches GPIO2 through a
 // 10k / 18k divider (Po -> 10k -> GPIO2 -> 18k -> GND), so GPIO2 sees 0.643 x
 // Po and never exceeds ~3.2 V. The board's offset trimmer (the one next to
-// the BNC socket) is set so Po = 2.50 V with the probe in pH 7 buffer (or the
-// BNC centre shorted to its shell); the slope is the board's typical
-// 0.18 V per pH unit at Po. Refine kPhBoard* against pH 4/7 buffers.
+// the BNC socket) is left as it is: the pH 7 point below is a ONE-POINT FIELD
+// CALIBRATION (2026-10-07) -- the probe settled at 1669 mV on GPIO2 (Po
+// 2.596 V) in tap water, which is taken as pH 7.0 (Sri Lankan tap water is
+// specified at pH 6.5-8.5 and is typically near neutral). The slope is the
+// board's typical 0.18 V per pH unit at Po. Replace both kPhBoard* values
+// with a pH 4 / pH 7 buffer calibration before trusting absolute pH.
 inline constexpr double kPhDividerRatio = 18.0 / (10.0 + 18.0);
-inline constexpr double kPhBoardNeutralVoltage = 2.50;  // Po at pH 7
+inline constexpr double kPhBoardNeutralVoltage = 2.596;  // Po at pH 7
 inline constexpr double kPhBoardVoltsPerUnit = 0.18;    // Po slope per pH unit
 inline constexpr double kPhNeutralVoltage =
     kPhBoardNeutralVoltage * kPhDividerRatio;  // ~1.607 V on GPIO2
