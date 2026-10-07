@@ -18,12 +18,21 @@ inline double tds_ppm_from_voltage(double voltageV, double temperatureC) {
   return std::max(0.0, tds);
 }
 
-// pH: two-point linear calibration against the probe's analog voltage.
-// kPhNeutralVoltage/kPhVoltsPerUnit MUST be re-measured for the specific
-// PH4502C board + probe in use (calibrate against pH 4/7/10 buffer
-// solutions) -- the values below are placeholders only, not a calibration.
-inline constexpr double kPhNeutralVoltage = 1.65;  // voltage at pH 7 buffer
-inline constexpr double kPhVoltsPerUnit = 0.18;    // slope, volts per pH unit
+// pH: linear conversion of the voltage seen on the pH ADC pin.
+//
+// Wiring: the PH-4502C runs on 5 V and its Po output reaches GPIO2 through a
+// 10k / 18k divider (Po -> 10k -> GPIO2 -> 18k -> GND), so GPIO2 sees 0.643 x
+// Po and never exceeds ~3.2 V. The board's offset trimmer (the one next to
+// the BNC socket) is set so Po = 2.50 V with the probe in pH 7 buffer (or the
+// BNC centre shorted to its shell); the slope is the board's typical
+// 0.18 V per pH unit at Po. Refine kPhBoard* against pH 4/7 buffers.
+inline constexpr double kPhDividerRatio = 18.0 / (10.0 + 18.0);
+inline constexpr double kPhBoardNeutralVoltage = 2.50;  // Po at pH 7
+inline constexpr double kPhBoardVoltsPerUnit = 0.18;    // Po slope per pH unit
+inline constexpr double kPhNeutralVoltage =
+    kPhBoardNeutralVoltage * kPhDividerRatio;  // ~1.607 V on GPIO2
+inline constexpr double kPhVoltsPerUnit =
+    kPhBoardVoltsPerUnit * kPhDividerRatio;  // ~0.116 V per pH unit on GPIO2
 
 inline double ph_from_voltage(double voltageV) {
   return std::clamp(
