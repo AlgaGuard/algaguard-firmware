@@ -18,8 +18,11 @@ if env.subst("$PIOENV") in uart_console_profiles:
     required = (
         "CONFIG_ESP_CONSOLE_UART_DEFAULT=y",
         "# CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG is not set",
+        # Mirror the log to the native USB port (GPIO19/20) as well, so the
+        # board can be monitored without the CH343 UART connected.
+        "CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y",
     )
     current = generated.read_text(encoding="utf-8") if generated.exists() else ""
     if not all(entry in current for entry in required):
         shutil.copyfile(defaults, generated)
-        print("Physical hardware SDK config initialized with UART console on COM16.")
+        print("Physical hardware SDK config initialized: UART console, mirrored to native USB.")

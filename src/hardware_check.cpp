@@ -196,7 +196,7 @@ void check_solder_bridges() {
     const char* name;
     bool receiver;
   };
-  const std::array<Pin, 17> pins{{{4, "UP", true},
+  const std::array<Pin, 16> pins{{{4, "UP", true},
                                   {5, "DOWN", true},
                                   {6, "SELECT", true},
                                   {7, "BACK", true},
@@ -205,7 +205,9 @@ void check_solder_bridges() {
                                   {10, "SD CS", true},
                                   {11, "SD MOSI", true},
                                   {12, "SD SCK", true},
-                                  {13, "SD MISO", true},
+                                  // SD MISO (GPIO13) is left out: an SD module's
+                                  // level shifter actively drives it, so it reads
+                                  // LOW at rest and must not be driven against.
                                   {14, "LED R", false},
                                   {15, "LED G", false},
                                   {16, "LED B", false},
@@ -749,7 +751,7 @@ void live_values() {
 }  // namespace
 
 void algaguard_run_hardware_check() {
-  wait_ms(1500);  // let the serial monitor attach after reset
+  wait_ms(4000);  // let a monitor reattach after reset (native USB re-enumerates)
   std::printf("\n\nAlgaGuard hardware check - one part at a time\n");
   check_chip();
   check_solder_bridges();

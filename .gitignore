@@ -4,6 +4,7 @@ managed_components/
 compile_commands.json
 sdkconfig.*
 !sdkconfig.defaults
+!sdkconfig.physical-test.defaults
 __pycache__/
 firmware-manifest.json
 *.pem
