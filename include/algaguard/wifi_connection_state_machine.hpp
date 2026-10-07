@@ -112,10 +112,14 @@ class WifiConnectionStateMachine {
     return beginAttempt(nowTick);
   }
 
+  // Also allowed after a timed-out attempt: a saved network that was
+  // unreachable once (router still booting after a power cut) must be tried
+  // again later, or the device stays offline until it is power-cycled.
   WifiConnectionResult restoreSavedNetworkStarted(std::uint64_t nowTick) {
     if (state_ != WifiConnectionState::kIdle &&
         state_ != WifiConnectionState::kCleared &&
-        state_ != WifiConnectionState::kDisconnected)
+        state_ != WifiConnectionState::kDisconnected &&
+        state_ != WifiConnectionState::kTimedOut)
       return result(WifiConnectionReason::kInvalidTransition, false);
     attemptNumber_ = 1;
     attemptStartedTick_ = nowTick;

@@ -219,6 +219,23 @@ void test_165_safe_results_and_host_fake_retain_no_credential_text() {
   TEST_ASSERT_FALSE(adapter.inProgress);
 }
 
+void test_166_saved_network_is_tried_again_after_a_timeout_or_a_drop() {
+  FakeWifiConnectionAdapter adapter;
+  algaguard::WifiConnectionStateMachine manager{adapter};
+  TEST_ASSERT_EQUAL(algaguard::WifiConnectionState::kRestoringSavedNetwork,
+                    manager.restoreSavedNetworkStarted(100).state);
+  TEST_ASSERT_EQUAL(algaguard::WifiConnectionState::kTimedOut, manager.onTick(120).state);
+  // The router may simply not be up yet: a later attempt must be accepted.
+  TEST_ASSERT_EQUAL(algaguard::WifiConnectionState::kRestoringSavedNetwork,
+                    manager.restoreSavedNetworkStarted(500).state);
+  TEST_ASSERT_EQUAL(algaguard::WifiConnectionState::kConnected,
+                    manager.onDriverEvent(algaguard::WifiDriverEvent::kConnected, 510).state);
+  TEST_ASSERT_EQUAL(algaguard::WifiConnectionState::kDisconnected,
+                    manager.onDriverEvent(algaguard::WifiDriverEvent::kDisconnected, 900).state);
+  TEST_ASSERT_EQUAL(algaguard::WifiConnectionState::kRestoringSavedNetwork,
+                    manager.restoreSavedNetworkStarted(1000).state);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_158_handoff_moves_once_and_starts_one_connection_attempt);
@@ -229,5 +246,6 @@ int main(int, char**) {
   RUN_TEST(test_163_timeout_uses_injected_ticks_and_clears_after_retry_exhaustion);
   RUN_TEST(test_164_cancellation_disconnect_and_repeated_cleanup_are_safe);
   RUN_TEST(test_165_safe_results_and_host_fake_retain_no_credential_text);
+  RUN_TEST(test_166_saved_network_is_tried_again_after_a_timeout_or_a_drop);
   return UNITY_END();
 }

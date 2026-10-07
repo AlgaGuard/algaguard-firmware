@@ -151,6 +151,22 @@ bool EspIdfWifiConnectionAdapter::forgetSavedNetwork() {
 #endif
 }
 
+bool EspIdfWifiConnectionAdapter::retrySavedNetwork(std::uint64_t nowTick) {
+#if defined(ALGAGUARD_DEVELOPMENT_WIFI_NVS_PLAINTEXT)
+  if (runtime_ == nullptr || !started_ || connectionInProgress_) return false;
+  wifi_config_t saved{};
+  if (esp_wifi_get_config(WIFI_IF_STA, &saved) != ESP_OK || saved.sta.ssid[0] == '\0')
+    return false;  // nothing saved (e.g. cleared by an unpair): stay offline
+  if (esp_wifi_connect() != ESP_OK) return false;
+  connectionInProgress_ = true;
+  (void)runtime_->restoreSavedNetworkStarted(nowTick);
+  return true;
+#else
+  (void)nowTick;
+  return false;
+#endif
+}
+
 void EspIdfWifiConnectionAdapter::clearSensitiveDriverInput() {
   // Credentials exist only in beginConnect's stack-local wifi_config_t.
 }

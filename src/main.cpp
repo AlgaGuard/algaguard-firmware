@@ -894,6 +894,38 @@ void poll_physical_session_console() {
 }
 #endif
 
+#if defined(ALGAGUARD_DEVELOPMENT_WIFI_NVS_PLAINTEXT)
+// The saved network is otherwise only tried once, at boot. After a timeout or
+// a dropped link (e.g. the router restarting after a power cut while the UPS
+// keeps the board running) retry with a growing gap instead of staying
+// offline until the board is power-cycled.
+void maintain_saved_wifi(std::uint64_t now) {
+  constexpr std::uint64_t kFirstRetry = pdMS_TO_TICKS(15000);
+  constexpr std::uint64_t kLongestRetry = pdMS_TO_TICKS(300000);
+  static std::uint64_t backoff = kFirstRetry;
+  static std::uint64_t next_retry = 0;
+  const auto state = wifi_connection_runtime.state();
+  if (state == algaguard::WifiConnectionState::kConnected) {
+    backoff = kFirstRetry;
+    next_retry = 0;
+    return;
+  }
+  if (state != algaguard::WifiConnectionState::kDisconnected &&
+      state != algaguard::WifiConnectionState::kTimedOut)
+    return;
+  if (next_retry == 0) {
+    next_retry = now + backoff;
+    return;
+  }
+  if (now < next_retry) return;
+  if (wifi_connection_adapter.retrySavedNetwork(now))
+    ESP_LOGI(kTag, "WIFI_SAVED_NETWORK_RETRY waitedMs=%llu",
+             static_cast<unsigned long long>(backoff * portTICK_PERIOD_MS));
+  backoff = std::min(backoff * 2, kLongestRetry);
+  next_retry = now + backoff;
+}
+#endif
+
 void startup_task(void*) {
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
   auto last_advertising_status = ble_provisioning_transport.advertisingRuntimeStatus();
@@ -904,6 +936,9 @@ void startup_task(void*) {
     ble_provisioning_transport.pollProvisioningTransport(
         static_cast<std::uint64_t>(xTaskGetTickCount()));
     wifi_connection_runtime.poll(static_cast<std::uint64_t>(xTaskGetTickCount()));
+#if defined(ALGAGUARD_DEVELOPMENT_WIFI_NVS_PLAINTEXT)
+    maintain_saved_wifi(static_cast<std::uint64_t>(xTaskGetTickCount()));
+#endif
 #if defined(ALGAGUARD_PHYSICAL_TEST_MODE)
     poll_physical_session_console();
     if (ble_provisioning_transport.latestSafeStatus().view().find("ACCEPTED") != std::string_view::npos &&
